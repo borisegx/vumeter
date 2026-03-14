@@ -11,10 +11,11 @@ from PyQt6.QtGui import (QPainter, QColor, QBrush, QPen, QLinearGradient,
 import json
 import math
 import os
+import numpy as np
 
 # Constantes de visualización
 SMOOTHING_FACTOR = 0.3           # Factor de interpolación lineal (lerp)
-MAX_PEAK_DECAY = 0.001           # Velocidad de caída del peak absoluto por frame
+MAX_PEAK_DECAY = 0.006           # Velocidad de caída del peak absoluto por frame (~2.8s full decay)
 RENDER_FPS = 60                  # Frames por segundo del timer de renderizado
 RENDER_INTERVAL_MS = 16          # ~60 FPS (1000/60)
 SPECTRUM_LEDS = 8                # LEDs por barra de espectro (large)
@@ -249,8 +250,8 @@ class LEDBar(QWidget):
 
             # Dibujar el "LED" en cian si es el absolute peak exacto
             is_max_peak_led = (led_index == max_peak_idx)
-            if is_max_peak_led and not is_on:
-                # Modificamos los parámetros para dibujar este solo LED brillante en cian
+            if is_max_peak_led:
+                # Peak absoluto siempre visible en cian (incluso sobre LEDs encendidos)
                 color = QColor(0, 255, 255)
                 self._draw_led(painter, x, y, led_width, led_height, color, True)
             else:
@@ -293,7 +294,8 @@ class LEDBar(QWidget):
 
             # Dibujar el "LED" en cian si es el absolute peak exacto
             is_max_peak_led = (i == max_peak_idx)
-            if is_max_peak_led and not is_on:
+            if is_max_peak_led:
+                # Peak absoluto siempre visible en cian
                 color = QColor(0, 255, 255)
                 self._draw_led(painter, x, y, led_width, led_height, color, True)
             else:
@@ -439,6 +441,153 @@ class SpectrumBar(QWidget):
                 painter.drawRoundedRect(rect, self.border_radius, self.border_radius)
 
 
+class StereoScopeWidget(QWidget):
+    """
+    Display Lissajous (X-Y) para visualizar correlación estéreo.
+    Eje X = canal izquierdo, Eje Y = canal derecho.
+    """
+
+    BUFFER_SIZE = 4096
+    FADE_BUCKETS = 8
+
+    def __init__(self, size_mode='large', parent=None):
+        super().__init__(parent)
+        self.size_mode = size_mode
+
+        if size_mode == 'small':
+            self._display_size = 80
+        else:
+            self._display_size = 140
+
+        self.setFixedSize(self._display_size + 20, self._display_size + 20)
+
+        self._buffer_left = np.zeros(self.BUFFER_SIZE, dtype=np.float32)
+        self._buffer_right = np.zeros(self.BUFFER_SIZE, dtype=np.float32)
+        self._buffer_pos = 0
+        self._sample_count = 0
+
+    def add_samples(self, data):
+        """Agrega muestras estéreo raw al buffer circular."""
+        if data.shape[1] < 2:
+            return
+        left = data[:, 0]
+        right = data[:, 1]
+        n = len(left)
+
+        if n >= self.BUFFER_SIZE:
+            self._buffer_left[:] = left[-self.BUFFER_SIZE:]
+            self._buffer_right[:] = right[-self.BUFFER_SIZE:]
+            self._buffer_pos = 0
+        else:
+            end = self._buffer_pos + n
+            if end <= self.BUFFER_SIZE:
+                self._buffer_left[self._buffer_pos:end] = left
+                self._buffer_right[self._buffer_pos:end] = right
+                self._buffer_pos = end % self.BUFFER_SIZE
+            else:
+                first_part = self.BUFFER_SIZE - self._buffer_pos
+                self._buffer_left[self._buffer_pos:] = left[:first_part]
+                self._buffer_right[self._buffer_pos:] = right[:first_part]
+                remainder = n - first_part
+                self._buffer_left[:remainder] = left[first_part:]
+                self._buffer_right[:remainder] = right[first_part:]
+                self._buffer_pos = remainder
+        self._sample_count += n
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        margin = 10
+        display_rect = QRectF(margin, margin, self._display_size, self._display_size)
+        painter.fillRect(self.rect(), QColor(20, 20, 25))
+        painter.fillRect(display_rect, QColor(10, 10, 15))
+
+        # Guías de referencia
+        cx = margin + self._display_size / 2
+        cy = margin + self._display_size / 2
+        painter.setPen(QPen(QColor(40, 40, 50), 1))
+        painter.drawLine(int(cx), margin, int(cx), margin + self._display_size)
+        painter.drawLine(margin, int(cy), margin + self._display_size, int(cy))
+
+        # Diagonal mono (L=R)
+        painter.setPen(QPen(QColor(30, 35, 30), 1, Qt.PenStyle.DotLine))
+        painter.drawLine(margin, margin + self._display_size,
+                         margin + self._display_size, margin)
+        # Diagonal anti-fase
+        painter.setPen(QPen(QColor(35, 30, 30), 1, Qt.PenStyle.DotLine))
+        painter.drawLine(margin, margin,
+                         margin + self._display_size, margin + self._display_size)
+
+        total_valid = min(self._sample_count, self.BUFFER_SIZE)
+        if total_valid < 2:
+            painter.end()
+            return
+
+        # Leer buffer en orden (más antiguo primero)
+        if self._sample_count >= self.BUFFER_SIZE:
+            indices = np.arange(self._buffer_pos, self._buffer_pos + self.BUFFER_SIZE) % self.BUFFER_SIZE
+        else:
+            indices = np.arange(0, total_valid)
+
+        left_samples = self._buffer_left[indices]
+        right_samples = self._buffer_right[indices]
+
+        # Downsample para rendimiento
+        max_points = 800
+        if len(left_samples) > max_points:
+            step = len(left_samples) // max_points
+            left_samples = left_samples[::step]
+            right_samples = right_samples[::step]
+            total_valid = len(left_samples)
+
+        # Mapear a coordenadas de display
+        half = self._display_size / 2
+        xs = margin + half + left_samples * half * 0.9
+        ys = margin + half - right_samples * half * 0.9
+
+        # Calcular amplitud para colores por intensidad
+        amplitudes = np.sqrt(left_samples**2 + right_samples**2)
+        max_amp = max(float(np.max(amplitudes)), 0.001)
+        norm_amp = amplitudes / max_amp
+
+        # Brackets de color por amplitud (low, high, hue HSV)
+        amp_brackets = [
+            (0.0, 0.2, 200),    # Azul (señal baja)
+            (0.2, 0.4, 160),    # Cian
+            (0.4, 0.6, 120),    # Verde
+            (0.6, 0.8, 60),     # Amarillo
+            (0.8, 1.01, 0),     # Rojo (señal alta)
+        ]
+
+        bucket_size = max(1, total_valid // self.FADE_BUCKETS)
+        dot_size = 2 if self.size_mode == 'small' else 3
+
+        for bucket in range(self.FADE_BUCKETS):
+            start = bucket * bucket_size
+            end = min(start + bucket_size, total_valid)
+            if start >= total_valid:
+                break
+
+            alpha = int(40 + (bucket / max(1, self.FADE_BUCKETS - 1)) * 200)
+
+            for low, high, hue in amp_brackets:
+                mask = (norm_amp[start:end] >= low) & (norm_amp[start:end] < high)
+                if not np.any(mask):
+                    continue
+
+                color = QColor.fromHsv(hue, 255, 255, alpha)
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(QBrush(color))
+
+                indices_in_bucket = np.where(mask)[0] + start
+                for j in indices_in_bucket:
+                    painter.drawEllipse(QPointF(float(xs[j]), float(ys[j])),
+                                        dot_size / 2, dot_size / 2)
+
+        painter.end()
+
+
 class VUMeterWidget(QWidget):
     """
     Widget completo de VU Meter con dos canales (L/R).
@@ -447,10 +596,14 @@ class VUMeterWidget(QWidget):
 
     # Señal emitida cuando cambian los niveles
     levels_changed = pyqtSignal(float, float, float, float)  # L, R, L_peak, R_peak
+    position_changed = pyqtSignal(int, int)
+    opacity_changed = pyqtSignal(float)
 
     def __init__(self, num_leds: int = 20, color_scheme: str = 'classic',
                  show_scale: bool = True, size_mode: str = 'large',
-                 num_bands: int = 6, parent=None):
+                 num_bands: int = 6, show_spectrum: bool = True,
+                 show_stereoscope: bool = False, opacity: float = 1.0,
+                 parent=None):
         """
         Inicializa el widget VU Meter.
 
@@ -467,6 +620,9 @@ class VUMeterWidget(QWidget):
         self.show_scale = show_scale
         self.size_mode = size_mode
         self.num_bands = num_bands
+        self.show_spectrum = show_spectrum
+        self.show_stereoscope = show_stereoscope
+        self._opacity = max(0.3, min(1.0, opacity))
 
         # Configurar ventana flotante
         self.setWindowFlags(
@@ -485,6 +641,9 @@ class VUMeterWidget(QWidget):
 
         # Configurar UI
         self._setup_ui()
+
+        # Aplicar opacidad
+        self.setWindowOpacity(self._opacity)
 
         # Efecto de sombra para la ventana flotante (Neon / Elevación)
         shadow = QGraphicsDropShadowEffect(self)
@@ -577,74 +736,111 @@ class VUMeterWidget(QWidget):
         self.db_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         container_layout.addWidget(self.db_label)
 
-        # --- SECCIÓN DE ESPECTRO ---
-        separator = QFrame()
-        separator.setFrameShape(QFrame.Shape.HLine)
-        separator.setStyleSheet("background-color: rgba(80, 80, 100, 100);")
-        separator.setFixedHeight(1)
-        container_layout.addWidget(separator)
-
-        spec_title_size = "7px" if self.size_mode == 'small' else "10px"
-        spec_title = QLabel("SPECTRUM")
-        spec_title.setStyleSheet(f"""
-            QLabel {{
-                color: #808090;
-                font-size: {spec_title_size};
-                font-weight: 700;
-                font-family: 'Segoe UI', Arial, sans-serif;
-                letter-spacing: 2px;
-            }}
-        """)
-        spec_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        container_layout.addWidget(spec_title)
-
-        from audio_capture import SPECTRUM_PRESETS
-        preset = SPECTRUM_PRESETS.get(self.num_bands, SPECTRUM_PRESETS[6])
-        band_labels = preset['labels']
-
+        # --- SECCIÓN DE ESPECTRO (condicional) ---
         self.left_spectrum_bars = []
         self.right_spectrum_bars = []
-        num_spec_leds = SPECTRUM_LEDS_SMALL if self.size_mode == 'small' else SPECTRUM_LEDS
-        hz_font_size = "6px" if self.size_mode == 'small' else "8px"
-        hz_label_width = 24 if self.size_mode == 'small' else 30
 
-        for i, hz_text in enumerate(band_labels):
-            row = QHBoxLayout()
-            row.setSpacing(2)
-            row.setContentsMargins(0, 0, 0, 0)
+        if self.show_spectrum:
+            separator = QFrame()
+            separator.setFrameShape(QFrame.Shape.HLine)
+            separator.setStyleSheet("background-color: rgba(80, 80, 100, 100);")
+            separator.setFixedHeight(1)
+            container_layout.addWidget(separator)
 
-            color = spectrum_color(i, len(band_labels))
-            left_bar = SpectrumBar(color=color, num_leds=num_spec_leds, size_mode=self.size_mode)
-            self.left_spectrum_bars.append(left_bar)
-            row.addWidget(left_bar)
-
-            hz_lbl = QLabel(hz_text)
-            hz_lbl.setStyleSheet(f"""
+            spec_title_size = "7px" if self.size_mode == 'small' else "10px"
+            spec_title = QLabel("SPECTRUM")
+            spec_title.setStyleSheet(f"""
                 QLabel {{
-                    color: #606070;
-                    font-size: {hz_font_size};
-                    font-weight: bold;
-                    font-family: 'Consolas', monospace;
+                    color: #808090;
+                    font-size: {spec_title_size};
+                    font-weight: 700;
+                    font-family: 'Segoe UI', Arial, sans-serif;
+                    letter-spacing: 2px;
                 }}
             """)
-            hz_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
-            hz_lbl.setFixedWidth(hz_label_width)
-            row.addWidget(hz_lbl)
+            spec_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            container_layout.addWidget(spec_title)
 
-            right_bar = SpectrumBar(color=color, num_leds=num_spec_leds, size_mode=self.size_mode)
-            self.right_spectrum_bars.append(right_bar)
-            row.addWidget(right_bar)
+            from audio_capture import SPECTRUM_PRESETS
+            preset = SPECTRUM_PRESETS.get(self.num_bands, SPECTRUM_PRESETS[6])
+            band_labels = preset['labels']
 
-            container_layout.addLayout(row)
+            num_spec_leds = SPECTRUM_LEDS_SMALL if self.size_mode == 'small' else SPECTRUM_LEDS
+            hz_font_size = "6px" if self.size_mode == 'small' else "8px"
+            hz_label_width = 24 if self.size_mode == 'small' else 30
+
+            for i, hz_text in enumerate(band_labels):
+                row = QHBoxLayout()
+                row.setSpacing(2)
+                row.setContentsMargins(0, 0, 0, 0)
+
+                color = spectrum_color(i, len(band_labels))
+                left_bar = SpectrumBar(color=color, num_leds=num_spec_leds, size_mode=self.size_mode)
+                self.left_spectrum_bars.append(left_bar)
+                row.addWidget(left_bar)
+
+                hz_lbl = QLabel(hz_text)
+                hz_lbl.setStyleSheet(f"""
+                    QLabel {{
+                        color: #606070;
+                        font-size: {hz_font_size};
+                        font-weight: bold;
+                        font-family: 'Consolas', monospace;
+                    }}
+                """)
+                hz_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+                hz_lbl.setFixedWidth(hz_label_width)
+                row.addWidget(hz_lbl)
+
+                right_bar = SpectrumBar(color=color, num_leds=num_spec_leds, size_mode=self.size_mode)
+                self.right_spectrum_bars.append(right_bar)
+                row.addWidget(right_bar)
+
+                container_layout.addLayout(row)
+
+        # --- SECCIÓN DE ESTEREOSCOPIO (condicional) ---
+        self.stereoscope = None
+
+        if self.show_stereoscope:
+            stereo_sep = QFrame()
+            stereo_sep.setFrameShape(QFrame.Shape.HLine)
+            stereo_sep.setStyleSheet("background-color: rgba(80, 80, 100, 100);")
+            stereo_sep.setFixedHeight(1)
+            container_layout.addWidget(stereo_sep)
+
+            stereo_title_size = "7px" if self.size_mode == 'small' else "10px"
+            stereo_title = QLabel("STEREO SCOPE")
+            stereo_title.setStyleSheet(f"""
+                QLabel {{
+                    color: #808090;
+                    font-size: {stereo_title_size};
+                    font-weight: 700;
+                    font-family: 'Segoe UI', Arial, sans-serif;
+                    letter-spacing: 2px;
+                }}
+            """)
+            stereo_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            container_layout.addWidget(stereo_title)
+
+            self.stereoscope = StereoScopeWidget(size_mode=self.size_mode)
+            container_layout.addWidget(self.stereoscope, alignment=Qt.AlignmentFlag.AlignCenter)
 
         main_layout.addWidget(container)
 
-        # Tamaño dinámico según número de bandas de espectro
+        # Tamaño dinámico según secciones activas
         if self.size_mode == 'small':
-            height = 268 + self.num_bands * 12
+            height = 240
+            if self.show_spectrum:
+                height = 268 + self.num_bands * 12
+            if self.show_stereoscope:
+                height += 115
             self.setFixedSize(120, height)
         else:
-            height = 452 + self.num_bands * 18
+            height = 400
+            if self.show_spectrum:
+                height = 452 + self.num_bands * 18
+            if self.show_stereoscope:
+                height += 185
             self.setFixedSize(220, height)
 
     def _create_channel_widget(self, label: str, name: str) -> QWidget:
@@ -776,6 +972,11 @@ class VUMeterWidget(QWidget):
             if i < len(self.right_spectrum_bars):
                 self.right_spectrum_bars[i].set_level(level)
 
+    def set_raw_samples(self, data):
+        """Alimenta muestras raw al estereoscopio."""
+        if self.stereoscope is not None:
+            self.stereoscope.add_samples(data)
+
     def _apply_decay(self):
         """Aplica decaimiento suave a los niveles e interpola visualmente."""
         if hasattr(self, 'left_bar'):
@@ -786,6 +987,8 @@ class VUMeterWidget(QWidget):
             bar.apply_interpolation()
         for bar in getattr(self, 'right_spectrum_bars', []):
             bar.apply_interpolation()
+        if self.stereoscope is not None:
+            self.stereoscope.update()
 
     def mousePressEvent(self, event):
         """Permite arrastrar la ventana."""
@@ -798,6 +1001,24 @@ class VUMeterWidget(QWidget):
         if event.buttons() & Qt.MouseButton.LeftButton and self.drag_position:
             self.move(event.globalPosition().toPoint() - self.drag_position)
             event.accept()
+
+    def moveEvent(self, event):
+        """Emite posición cuando la ventana se mueve."""
+        super().moveEvent(event)
+        pos = self.pos()
+        self.position_changed.emit(pos.x(), pos.y())
+
+    def wheelEvent(self, event):
+        """Cambia opacidad con la rueda del mouse."""
+        delta = event.angleDelta().y()
+        step = 0.05
+        if delta > 0:
+            self._opacity = min(1.0, self._opacity + step)
+        else:
+            self._opacity = max(0.3, self._opacity - step)
+        self.setWindowOpacity(self._opacity)
+        self.opacity_changed.emit(self._opacity)
+        event.accept()
 
     def mouseDoubleClickEvent(self, event):
         """Cierra la ventana con doble clic."""
@@ -817,10 +1038,20 @@ class VUMeterWidget(QWidget):
 
         menu.addSeparator()
 
+        reset_peaks_action = menu.addAction("Reset Peaks")
+        reset_peaks_action.triggered.connect(self._reset_peaks)
+
+        menu.addSeparator()
+
         close_action = menu.addAction("Close")
         close_action.triggered.connect(self.close)
 
         menu.exec(event.globalPos())
+
+    def _reset_peaks(self):
+        """Reinicia los indicadores de peak absoluto."""
+        self.left_bar.max_peak_level = 0.0
+        self.right_bar.max_peak_level = 0.0
 
     def _change_color(self, scheme: str):
         """Cambia el esquema de colores."""

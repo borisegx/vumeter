@@ -7,12 +7,13 @@ import sys
 import os
 import json
 import argparse
+import winreg
 from pathlib import Path
 
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QComboBox,
                              QCheckBox, QSystemTrayIcon, QMenu,
-                             QFrame, QSpinBox)
+                             QFrame, QSpinBox, QSlider)
 from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtGui import QIcon, QFont, QPixmap, QPainter, QColor, QBrush, QAction
 
@@ -31,6 +32,12 @@ DEFAULT_CONFIG = {
     'spectrum_bands': 1,  # Índice: 0=3 bandas, 1=6 bandas, 2=12 bandas
     'always_on_top': True,
     'device': 'Default System Audio',
+    'show_spectrum': True,
+    'show_stereoscope': False,
+    'window_x': None,
+    'window_y': None,
+    'opacity': 1.0,
+    'auto_start': False,
 }
 
 
@@ -54,6 +61,48 @@ def save_config(config):
             json.dump(config, f, indent=2)
     except Exception:
         pass
+
+
+AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+AUTOSTART_APP_NAME = "VUMeter"
+
+
+def get_autostart_command():
+    """Genera el comando para auto-inicio usando pythonw.exe con el .pyw."""
+    script_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'start_vumeter.pyw')
+    venv_pythonw = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'venv', 'Scripts', 'pythonw.exe')
+    if os.path.exists(venv_pythonw):
+        return f'"{venv_pythonw}" "{script_path}" --hidden'
+    return f'pythonw.exe "{script_path}" --hidden'
+
+
+def is_autostart_enabled():
+    """Verifica si el auto-inicio está habilitado en el registro."""
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_READ)
+        winreg.QueryValueEx(key, AUTOSTART_APP_NAME)
+        winreg.CloseKey(key)
+        return True
+    except FileNotFoundError:
+        return False
+    except Exception:
+        return False
+
+
+def set_autostart(enabled):
+    """Agrega o remueve la entrada de auto-inicio del registro."""
+    try:
+        key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, AUTOSTART_REG_KEY, 0, winreg.KEY_SET_VALUE)
+        if enabled:
+            winreg.SetValueEx(key, AUTOSTART_APP_NAME, 0, winreg.REG_SZ, get_autostart_command())
+        else:
+            try:
+                winreg.DeleteValue(key, AUTOSTART_APP_NAME)
+            except FileNotFoundError:
+                pass
+        winreg.CloseKey(key)
+    except Exception as e:
+        print(f"[ERROR] No se pudo modificar auto-inicio: {e}")
 
 
 def create_vu_icon():
@@ -111,7 +160,7 @@ class MainWindow(QMainWindow):
 
         # Configurar ventana
         self.setWindowTitle("VU Meter - Configuracion")
-        self.setMinimumSize(350, 450)
+        self.setMinimumSize(350, 580)
         self.setWindowFlags(self.windowFlags() & ~Qt.WindowType.WindowMaximizeButtonHint)
 
         # Variables
@@ -208,20 +257,55 @@ class MainWindow(QMainWindow):
         size_layout.addWidget(self.size_combo)
         main_layout.addLayout(size_layout)
 
-        # Bandas de espectro
-        bands_layout = QHBoxLayout()
+        # Mostrar espectro
+        self.show_spectrum_check = QCheckBox("Mostrar espectro")
+        self.show_spectrum_check.setChecked(True)
+        self.show_spectrum_check.stateChanged.connect(self._on_spectrum_toggle)
+        main_layout.addWidget(self.show_spectrum_check)
+
+        # Bandas de espectro (dentro de un widget para show/hide)
+        self.bands_widget = QWidget()
+        bands_inner_layout = QHBoxLayout(self.bands_widget)
+        bands_inner_layout.setContentsMargins(20, 0, 0, 0)
         bands_label = QLabel("Bandas de espectro:")
         self.bands_combo = QComboBox()
         self.bands_combo.addItems(['3 bandas (Low/Mid/High)', '6 bandas', '12 bandas'])
         self.bands_combo.setCurrentIndex(1)
-        bands_layout.addWidget(bands_label)
-        bands_layout.addWidget(self.bands_combo)
-        main_layout.addLayout(bands_layout)
+        bands_inner_layout.addWidget(bands_label)
+        bands_inner_layout.addWidget(self.bands_combo)
+        main_layout.addWidget(self.bands_widget)
+
+        # Mostrar estereoscopio
+        self.show_stereoscope_check = QCheckBox("Mostrar estereoscopio (Lissajous)")
+        self.show_stereoscope_check.setChecked(False)
+        main_layout.addWidget(self.show_stereoscope_check)
+
+        # Opacidad
+        opacity_layout = QHBoxLayout()
+        opacity_label = QLabel("Opacidad:")
+        self.opacity_slider = QSlider(Qt.Orientation.Horizontal)
+        self.opacity_slider.setRange(30, 100)
+        self.opacity_slider.setValue(100)
+        self.opacity_value_label = QLabel("100%")
+        self.opacity_value_label.setFixedWidth(35)
+        self.opacity_slider.valueChanged.connect(
+            lambda v: self.opacity_value_label.setText(f"{v}%")
+        )
+        opacity_layout.addWidget(opacity_label)
+        opacity_layout.addWidget(self.opacity_slider)
+        opacity_layout.addWidget(self.opacity_value_label)
+        main_layout.addLayout(opacity_layout)
 
         # Checkboxes
         self.always_on_top_check = QCheckBox("Siempre visible")
         self.always_on_top_check.setChecked(True)
         main_layout.addWidget(self.always_on_top_check)
+
+        # Auto-inicio con Windows
+        self.auto_start_check = QCheckBox("Iniciar con Windows")
+        self.auto_start_check.setChecked(False)
+        self.auto_start_check.stateChanged.connect(self._on_autostart_toggle)
+        main_layout.addWidget(self.auto_start_check)
 
         # Separador
         line2 = QFrame()
@@ -283,6 +367,7 @@ class MainWindow(QMainWindow):
         info = QLabel(
             "Doble clic en el VU Meter para cerrarlo\n"
             "Clic derecho para cambiar colores\n"
+            "Rueda del mouse para cambiar opacidad\n"
             "Arrastra para mover"
         )
         info.setStyleSheet("color: #888; font-size: 10px;")
@@ -350,12 +435,23 @@ class MainWindow(QMainWindow):
         size_idx = cfg.get('size_mode', 0)
         if 0 <= size_idx < self.size_combo.count():
             self.size_combo.setCurrentIndex(size_idx)
+        # Show spectrum
+        show_spec = cfg.get('show_spectrum', True)
+        self.show_spectrum_check.setChecked(show_spec)
+        self.bands_widget.setVisible(show_spec)
         # Spectrum bands
         bands_idx = cfg.get('spectrum_bands', 1)
         if 0 <= bands_idx < self.bands_combo.count():
             self.bands_combo.setCurrentIndex(bands_idx)
+        # Show stereoscope
+        self.show_stereoscope_check.setChecked(cfg.get('show_stereoscope', False))
+        # Opacity
+        opacity_pct = int(cfg.get('opacity', 1.0) * 100)
+        self.opacity_slider.setValue(opacity_pct)
         # Checkboxes
         self.always_on_top_check.setChecked(cfg.get('always_on_top', True))
+        # Auto-start (verificar estado real del registro)
+        self.auto_start_check.setChecked(is_autostart_enabled())
         # Dispositivo
         saved_device = cfg.get('device', 'Default System Audio')
         idx = self.device_combo.findText(saved_device)
@@ -371,8 +467,15 @@ class MainWindow(QMainWindow):
             'spectrum_bands': self.bands_combo.currentIndex(),
             'always_on_top': self.always_on_top_check.isChecked(),
             'device': self.device_combo.currentText(),
+            'show_spectrum': self.show_spectrum_check.isChecked(),
+            'show_stereoscope': self.show_stereoscope_check.isChecked(),
+            'window_x': self.config.get('window_x'),
+            'window_y': self.config.get('window_y'),
+            'opacity': self.opacity_slider.value() / 100.0,
+            'auto_start': self.auto_start_check.isChecked(),
         }
         save_config(config)
+        self.config = config
 
     def _refresh_devices(self):
         """Refresca la lista de dispositivos de audio disponibles."""
@@ -419,12 +522,20 @@ class MainWindow(QMainWindow):
             bands_map = {0: 3, 1: 6, 2: 12}
             num_bands = bands_map.get(self.bands_combo.currentIndex(), 6)
 
+            # Opciones de visualización
+            show_spectrum = self.show_spectrum_check.isChecked()
+            show_stereoscope = self.show_stereoscope_check.isChecked()
+            opacity = self.opacity_slider.value() / 100.0
+
             # Crear VU Meter
             self.vu_meter = VUMeterWidget(
                 num_leds=num_leds,
                 color_scheme=color_scheme,
                 size_mode=size_mode,
-                num_bands=num_bands
+                num_bands=num_bands,
+                show_spectrum=show_spectrum,
+                show_stereoscope=show_stereoscope,
+                opacity=opacity
             )
 
             # Siempre visible
@@ -435,6 +546,20 @@ class MainWindow(QMainWindow):
 
             self.vu_meter.show()
 
+            # Restaurar posición guardada
+            saved_x = self.config.get('window_x')
+            saved_y = self.config.get('window_y')
+            if saved_x is not None and saved_y is not None:
+                screen = QApplication.primaryScreen()
+                if screen:
+                    geom = screen.availableGeometry()
+                    if geom.contains(int(saved_x), int(saved_y)):
+                        self.vu_meter.move(int(saved_x), int(saved_y))
+
+            # Conectar señales de posición y opacidad
+            self.vu_meter.position_changed.connect(self._on_vu_meter_moved)
+            self.vu_meter.opacity_changed.connect(self._on_opacity_changed)
+
             # Crear capturador de audio nativo de PyQt
             self.audio_capture = AudioCapture(
                 simulation_mode=False,
@@ -444,7 +569,10 @@ class MainWindow(QMainWindow):
 
             # Conexión thread-safe mediante señales
             self.audio_capture.levels_updated.connect(self._on_audio_level)
-            self.audio_capture.spectrum_updated.connect(self._on_spectrum_data)
+            if show_spectrum:
+                self.audio_capture.spectrum_updated.connect(self._on_spectrum_data)
+            if show_stereoscope:
+                self.audio_capture.raw_samples_updated.connect(self._on_raw_samples)
 
             # Iniciar captura (QThread.start())
             self.audio_capture.start()
@@ -491,11 +619,15 @@ class MainWindow(QMainWindow):
     def _stop_vu_meter(self):
         """Detiene el VU Meter asegurando el cierre de hilos."""
         if self.audio_capture:
-            # Llama al método stop() que ahora gestiona el wait() del QThread
             self.audio_capture.stop()
             self.audio_capture = None
 
         if self.vu_meter:
+            # Guardar posición antes de cerrar
+            pos = self.vu_meter.pos()
+            self.config['window_x'] = pos.x()
+            self.config['window_y'] = pos.y()
+            self._save_current_config()
             self.vu_meter.close()
             self.vu_meter = None
 
@@ -552,6 +684,33 @@ class MainWindow(QMainWindow):
         """Callback para datos de espectro de frecuencias."""
         if self.vu_meter:
             self.vu_meter.set_spectrum(left_bands, right_bands)
+
+    def _on_raw_samples(self, data):
+        """Pasa muestras raw al estereoscopio."""
+        if self.vu_meter:
+            self.vu_meter.set_raw_samples(data)
+
+    def _on_vu_meter_moved(self, x, y):
+        """Guarda posición del VU Meter al moverlo."""
+        self.config['window_x'] = x
+        self.config['window_y'] = y
+
+    def _on_opacity_changed(self, opacity):
+        """Sincroniza opacidad con el slider de configuración."""
+        self.config['opacity'] = opacity
+        self.opacity_slider.blockSignals(True)
+        self.opacity_slider.setValue(int(opacity * 100))
+        self.opacity_slider.blockSignals(False)
+        self.opacity_value_label.setText(f"{int(opacity * 100)}%")
+
+    def _on_spectrum_toggle(self, state):
+        """Muestra/oculta el combo de bandas según el toggle de espectro."""
+        self.bands_widget.setVisible(state == Qt.CheckState.Checked.value)
+
+    def _on_autostart_toggle(self, state):
+        """Activa/desactiva el inicio automático con Windows."""
+        enabled = (state == Qt.CheckState.Checked.value)
+        set_autostart(enabled)
 
     def closeEvent(self, event):
         """Maneja el cierre de la ventana."""

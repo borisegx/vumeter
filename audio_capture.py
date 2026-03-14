@@ -21,7 +21,7 @@ DEFAULT_SAMPLE_RATE = 44100
 DEFAULT_CHUNK_SIZE = 1024
 BALLISTIC_DECAY_RATE = 3.0       # Factor de decaimiento exponencial (seg^-1)
 DB_FLOOR = -60.0                 # Piso en dB (silencio)
-DB_CEILING = 0.0                 # Techo en dB (señal máxima)
+DB_CEILING = 6.0                 # Techo en dB (+6dB headroom para evitar saturación visual)
 DB_RANGE = DB_CEILING - DB_FLOOR # Rango total en dB
 SIMULATION_STEP = 0.05           # Incremento temporal en simulación
 SIMULATION_SLEEP = 0.02          # Pausa entre frames de simulación (seg)
@@ -64,6 +64,8 @@ class AudioCapture(QThread):
     levels_updated = pyqtSignal(float, float, float, float)
     # Señal para datos de espectro de frecuencias (left_bands, right_bands)
     spectrum_updated = pyqtSignal(list, list)
+    # Señal para muestras raw (estereoscopio Lissajous)
+    raw_samples_updated = pyqtSignal(object)
 
     def __init__(self, sample_rate=DEFAULT_SAMPLE_RATE, chunk_size=DEFAULT_CHUNK_SIZE,
                  simulation_mode=False, device_name=None, num_bands=6):
@@ -112,6 +114,9 @@ class AudioCapture(QThread):
 
             channels = min(2, device_info['maxInputChannels'])
             sample_rate = int(device_info['defaultSampleRate'])
+
+            # Actualizar sample rate real para cálculos de FFT correctos
+            self.sample_rate = sample_rate
 
             stream = p.open(
                 format=pyaudio.paFloat32,
@@ -265,6 +270,9 @@ class AudioCapture(QThread):
             right_bands = left_bands[:]
         self.spectrum_updated.emit(left_bands, right_bands)
 
+        # Emitir muestras raw para estereoscopio
+        self.raw_samples_updated.emit(data.copy())
+
     def stop(self):
         """Detiene la ejecución del hilo de forma limpia."""
         self.is_running = False
@@ -298,6 +306,14 @@ class AudioCapture(QThread):
             left_bands = [min(1.0, max(0.0, base + 0.15 * np.sin(t * (2 + i * 1.3)))) for i in range(num)]
             right_bands = [min(1.0, max(0.0, base + 0.15 * np.sin(t * (2.5 + i * 1.1)))) for i in range(num)]
             self.spectrum_updated.emit(left_bands, right_bands)
+
+            # Muestras raw simuladas para estereoscopio
+            num_samples = self.chunk_size
+            t_arr = np.linspace(t - SIMULATION_STEP, t, num_samples)
+            sim_left = 0.3 * np.sin(2 * np.pi * 440 * t_arr) + 0.1 * np.sin(2 * np.pi * 880 * t_arr)
+            sim_right = 0.3 * np.sin(2 * np.pi * 440 * t_arr + 0.5) + 0.1 * np.sin(2 * np.pi * 660 * t_arr)
+            sim_data = np.column_stack([sim_left, sim_right]).astype(np.float32)
+            self.raw_samples_updated.emit(sim_data)
 
             time.sleep(0.02)
 

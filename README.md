@@ -1,18 +1,22 @@
 # VU Meter para Windows
 
-Un medidor de volumen (VU Meter) flotante para Windows que captura **todo el audio del sistema** y lo visualiza en tiempo real con estilo LED. Incluye analizador de espectro por frecuencias.
+Un medidor de volumen (VU Meter) flotante para Windows que captura **todo el audio del sistema** y lo visualiza en tiempo real con estilo LED. Incluye analizador de espectro por frecuencias y estereoscopio Lissajous.
 
 ## Caracteristicas
 
-- **Captura WASAPI Loopback** - Intercepta el audio de salida del sistema sin necesidad de micrófono, usando `pyaudiowpatch` con WASAPI nativo.
-- **Seleccion de dispositivo** - Escoge qué tarjeta de sonido o salida de audio interceptar (speakers, auriculares, interfaces de audio).
+- **Captura WASAPI Loopback** - Intercepta el audio de salida del sistema sin necesidad de microfono, usando `pyaudiowpatch` con WASAPI nativo.
+- **Seleccion de dispositivo** - Escoge que tarjeta de sonido o salida de audio interceptar (speakers, auriculares, interfaces de audio).
 - **Estilo LED profesional** - Animaciones a 60 FPS con interpolacion suave, fisica resistiva balistica y efecto glow.
-- **Marcador Absolute Peak** - El pico maximo historico se ilumina permanentemente en color cian brillante.
-- **Analizador de espectro** - Visualizacion de frecuencias por canal (L/R) con barras horizontales LED por banda.
+- **Marcador Absolute Peak** - El pico maximo historico se ilumina en color cian brillante, siempre visible.
+- **Analizador de espectro** - Visualizacion de frecuencias por canal (L/R) con barras horizontales LED por banda. Se puede activar/desactivar.
 - **Bandas configurables** - Elige entre 3 bandas (Low/Mid/High), 6 bandas o 12 bandas con distribucion por tercios de octava.
+- **Estereoscopio Lissajous** - Display X-Y que muestra la correlacion estereo con colores por intensidad (azul=bajo, verde=medio, rojo=alto). Se puede activar/desactivar.
 - **Tamaños dinamicos** - Alterna entre tamaño Grande o Pequeño.
-- **Ventana flotante** - Siempre visible, arrastrable a cualquier posicion.
+- **Ventana flotante** - Siempre visible, arrastrable a cualquier posicion, con memoria de posicion.
+- **Opacidad ajustable** - Rueda del mouse para cambiar la transparencia de la ventana (30%-100%).
 - **Esquemas de colores** - Classic, Green, Blue, Purple, Rainbow y skins JSON personalizados.
+- **Auto-inicio con Windows** - Opcion para iniciar automaticamente con el sistema operativo.
+- **Configuracion persistente** - Todas las opciones se guardan y restauran automaticamente.
 
 ## Requisitos
 
@@ -81,8 +85,26 @@ python app.py --simulation
 |--------|-----------|
 | **Arrastrar** | Mueve la ventana flotante |
 | **Doble clic** | Cierra el VU Meter |
-| **Clic derecho** | Menu de opciones (cambiar color) |
+| **Clic derecho** | Menu de opciones (color, reset peaks, cerrar) |
+| **Rueda del mouse** | Ajusta la opacidad de la ventana |
 | **Icono en bandeja** | Clic derecho para menu del sistema |
+
+## Panel de configuracion
+
+El panel de configuracion permite ajustar todas las opciones antes de iniciar el VU Meter:
+
+| Opcion | Descripcion |
+|--------|-------------|
+| **Dispositivo de audio** | Selecciona la salida de audio a capturar |
+| **Esquema de colores** | Cambia el tema visual de los LEDs |
+| **Numero de LEDs** | Cantidad de LEDs por canal (10-30) |
+| **Tamaño** | Grande o Pequeño |
+| **Mostrar espectro** | Activa/desactiva el analizador de frecuencias |
+| **Bandas de espectro** | 3, 6 o 12 bandas (solo si el espectro esta activo) |
+| **Mostrar estereoscopio** | Activa/desactiva el display Lissajous X-Y |
+| **Opacidad** | Transparencia de la ventana (30%-100%) |
+| **Siempre visible** | Mantiene la ventana por encima de otras |
+| **Iniciar con Windows** | Registra la app en el inicio automatico del sistema |
 
 ## Analizador de espectro
 
@@ -96,7 +118,19 @@ El analizador de espectro descompone la senal de audio en bandas de frecuencia u
 | **6 bandas** | 20, 100, 350, 1k, 5k, 10k Hz | Vista estandar por rangos clasicos |
 | **12 bandas** | 20, 60, 150, 300, 500, 1k, 2k, 4k, 6k, 8k, 12k, 16k Hz | Vista detallada por tercios de octava |
 
-El modo de 12 bandas ofrece mayor granularidad especialmente en frecuencias bajas y medias, donde la informacion musical es mas densa.
+## Estereoscopio Lissajous
+
+El estereoscopio muestra un diagrama X-Y (Lissajous) donde:
+- **Eje X** = canal izquierdo
+- **Eje Y** = canal derecho
+- **Diagonal ascendente** = senal mono (L=R)
+- **Elipse/spread** = senal estereo
+- **Diagonal descendente** = senal en anti-fase
+
+Los puntos se colorean segun la intensidad de la senal:
+- **Azul** = amplitud baja
+- **Verde** = amplitud media
+- **Amarillo/Rojo** = amplitud alta
 
 ## Esquemas de colores
 
@@ -116,7 +150,7 @@ Tambien soporta **skins JSON personalizados** colocados en el directorio `skins/
 vumeter/
 ├── app.py                 # Ventana de configuracion (motor principal)
 ├── audio_capture.py       # Captura de audio WASAPI + analisis FFT
-├── vu_meter_widget.py     # Widget visual LED, espectro y animaciones
+├── vu_meter_widget.py     # Widget visual LED, espectro, estereoscopio y animaciones
 ├── start_vumeter.pyw      # Punto de entrada sin consola
 ├── start.bat              # Inicio con consola (debug)
 ├── Start VUMeter.bat      # Inicio silencioso
