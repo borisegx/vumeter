@@ -827,18 +827,20 @@ class VUMeterWidget(QWidget):
 
         main_layout.addWidget(container)
 
-        # Tamaño dinámico según secciones activas
+        # Tamaño dinámico según número de LEDs y secciones activas
         if self.size_mode == 'small':
-            height = 240
+            per_led = 8   # led_size(6) + led_spacing(2)
+            height = 80 + self.num_leds * per_led
             if self.show_spectrum:
-                height = 268 + self.num_bands * 12
+                height = 108 + self.num_leds * per_led + self.num_bands * 12
             if self.show_stereoscope:
                 height += 115
             self.setFixedSize(120, height)
         else:
-            height = 400
+            per_led = 15  # led_size(12) + led_spacing(3)
+            height = 100 + self.num_leds * per_led
             if self.show_spectrum:
-                height = 452 + self.num_bands * 18
+                height = 152 + self.num_leds * per_led + self.num_bands * 18
             if self.show_stereoscope:
                 height += 185
             self.setFixedSize(220, height)
