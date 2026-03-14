@@ -112,9 +112,9 @@ class LEDBar(QWidget):
     def _classic_colors(self, index: int, total: int) -> QColor:
         """Esquema clásico: verde -> amarillo -> rojo"""
         ratio = index / total
-        if ratio < 0.6:
+        if ratio < 0.50:
             return QColor(0, 200, 0)  # Verde
-        elif ratio < 0.8:
+        elif ratio < 0.72:
             return QColor(255, 200, 0)  # Amarillo
         else:
             return QColor(255, 50, 50)  # Rojo
