@@ -97,7 +97,7 @@ El panel de configuracion permite ajustar todas las opciones antes de iniciar el
 |--------|-------------|
 | **Dispositivo de audio** | Selecciona la salida de audio a capturar |
 | **Esquema de colores** | Cambia el tema visual de los LEDs |
-| **Numero de LEDs** | Cantidad de LEDs por canal (10-30) |
+| **Numero de LEDs** | 12, 20 o 30 LEDs por canal (tamaño adaptativo) |
 | **Tamaño** | Grande o Pequeño |
 | **Mostrar espectro** | Activa/desactiva el analizador de frecuencias |
 | **Bandas de espectro** | 3, 6 o 12 bandas (solo si el espectro esta activo) |
