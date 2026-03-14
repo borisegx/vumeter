@@ -124,13 +124,13 @@ class LEDBar(QWidget):
         # Cargar skins JSON externos
         self._custom_skins = load_skins()
 
-        # Tamaño mínimo
+        # Tamaño fijo para que el layout no comprima los LEDs
         if orientation == 'vertical':
             self.setMinimumWidth(self.led_size + 10)
-            self.setMinimumHeight((self.led_size + self.led_spacing) * num_leds + 10)
+            self.setFixedHeight((self.led_size + self.led_spacing) * num_leds + 10)
         else:
             self.setMinimumHeight(self.led_size + 10)
-            self.setMinimumWidth((self.led_size + self.led_spacing) * num_leds + 10)
+            self.setFixedWidth((self.led_size + self.led_spacing) * num_leds + 10)
 
     def _classic_colors(self, index: int, total: int) -> QColor:
         """Esquema clásico: verde -> amarillo -> rojo"""
@@ -850,24 +850,10 @@ class VUMeterWidget(QWidget):
 
         main_layout.addWidget(container)
 
-        # Tamaño dinámico según número de LEDs y secciones activas
-        led_cfg = get_led_config(self.size_mode, self.num_leds)
-        per_led = led_cfg['led_size'] + led_cfg['led_spacing']
-
-        if self.size_mode == 'small':
-            height = 80 + self.num_leds * per_led
-            if self.show_spectrum:
-                height = 108 + self.num_leds * per_led + self.num_bands * 12
-            if self.show_stereoscope:
-                height += 115
-            self.setFixedSize(120, height)
-        else:
-            height = 100 + self.num_leds * per_led
-            if self.show_spectrum:
-                height = 152 + self.num_leds * per_led + self.num_bands * 18
-            if self.show_stereoscope:
-                height += 185
-            self.setFixedSize(220, height)
+        # Ancho fijo, alto automático según contenido real
+        width = 120 if self.size_mode == 'small' else 220
+        self.setFixedWidth(width)
+        self.adjustSize()
 
     def _create_channel_widget(self, label: str, name: str) -> QWidget:
         """Crea un widget de canal con etiqueta y barra LED."""
