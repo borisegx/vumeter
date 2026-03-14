@@ -5,7 +5,7 @@ Muestra los niveles de audio con LEDs y efectos visuales
 
 from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
                              QFrame, QGraphicsDropShadowEffect)
-from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPointF, QRectF
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPointF, QRectF, QRect
 from PyQt6.QtGui import (QPainter, QColor, QBrush, QPen, QLinearGradient,
                          QRadialGradient, QPainterPath, QFont)
 import json
@@ -56,6 +56,55 @@ def get_led_config(size_mode: str, num_leds: int) -> dict:
     """Retorna configuración de tamaño para LEDs según modo y cantidad."""
     mode_cfg = LED_SIZE_CONFIG.get(size_mode, LED_SIZE_CONFIG['large'])
     return mode_cfg.get(num_leds, mode_cfg[20])
+
+
+class ScaleWidget(QWidget):
+    """Escala dBFS pintada con QPainter, alineada con las barras LED."""
+
+    # Marcas dB y su posición normalizada (0.0=silencio, 1.0=escala completa)
+    DB_MARKS = [
+        (0,   1.000),
+        (-6,  0.900),
+        (-12, 0.800),
+        (-18, 0.700),
+        (-24, 0.600),
+        (-36, 0.400),
+        (-48, 0.200),
+    ]
+
+    def __init__(self, num_leds: int, size_mode: str):
+        super().__init__()
+        cfg = get_led_config(size_mode, num_leds)
+        self._bar_height = (cfg['led_size'] + cfg['led_spacing']) * num_leds + 10
+        self._size_mode = size_mode
+        self._font_size = 7 if size_mode == 'small' else 9
+        self.setFixedWidth(35 if size_mode == 'large' else 22)
+        self.setFixedHeight(self._bar_height)
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.TextAntialiasing)
+
+        font = QFont('Consolas', self._font_size)
+        font.setBold(True)
+        painter.setFont(font)
+        painter.setPen(QColor(112, 112, 128))
+
+        h = self.height()
+        pad = 5  # mismo padding que LEDBar
+        usable = h - 2 * pad
+        fm = painter.fontMetrics()
+        text_h = fm.height()
+
+        for db, norm in self.DB_MARKS:
+            # norm=1.0 → arriba (y=pad), norm=0.0 → abajo (y=h-pad)
+            y = pad + int(usable * (1.0 - norm))
+            text = str(db)
+            rect = QRect(0, y - text_h // 2, self.width(), text_h)
+            painter.drawText(rect, Qt.AlignmentFlag.AlignCenter, text)
+
+        painter.end()
+
 
 # Directorio de skins
 SKINS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'skins')
@@ -262,8 +311,8 @@ class LEDBar(QWidget):
         if self.peak_level <= 0: peak_idx = -1
 
         for i in range(self.num_leds):
-            # Índice invertido (de abajo hacia arriba)
-            led_index = self.num_leds - 1 - i
+            # Índice directo: i=0 (abajo, verde) → i=N-1 (arriba, rojo)
+            led_index = i
 
             # Posición del LED
             y = start_y - (i + 1) * (led_height + self.led_spacing)
@@ -907,33 +956,28 @@ class VUMeterWidget(QWidget):
         return widget
 
     def _create_scale_widget(self) -> QWidget:
-        """Crea el widget de escala en dB distribuida uniformemente."""
+        """Crea el widget de escala dBFS alineado con las barras LED."""
         widget = QWidget()
-        widget.setFixedWidth(30)
-
         layout = QVBoxLayout(widget)
-        layout.setContentsMargins(0, 5, 0, 5)
-        layout.setSpacing(0)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)  # mismo spacing que _create_channel_widget
 
-        # Valores de escala
-        db_values = ['0', '-3', '-6', '-12', '-18', '-24', '-36', '-48', '-\u221e']
-        scale_font_size = "7px" if self.size_mode == 'small' else "9px"
+        # Espaciador superior (misma fuente que label de canal para igualar altura)
+        label_font_size = "10px" if self.size_mode == 'small' else "14px"
+        top_spacer = QLabel("")
+        top_spacer.setStyleSheet(f"font-size: {label_font_size};")
+        top_spacer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(top_spacer)
 
-        for i, db in enumerate(db_values):
-            label = QLabel(db)
-            label.setStyleSheet(f"""
-                QLabel {{
-                    color: #707080;
-                    font-size: {scale_font_size};
-                    font-weight: bold;
-                    font-family: 'Consolas', monospace;
-                }}
-            """)
-            label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
-            layout.addWidget(label)
-            # Separador elástico entre cada etiqueta (excepto después de la última)
-            if i < len(db_values) - 1:
-                layout.addStretch(1)
+        # Escala pintada con QPainter (misma altura que LEDBar)
+        scale = ScaleWidget(self.num_leds, self.size_mode)
+        layout.addWidget(scale, 1)
+
+        # Espaciador inferior (misma fuente que value label para igualar altura)
+        bottom_spacer = QLabel("")
+        bottom_spacer.setStyleSheet("font-size: 10px; font-family: monospace;")
+        bottom_spacer.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(bottom_spacer)
 
         return widget
 
