@@ -1,7 +1,6 @@
 """
 VU Meter Application - Aplicación principal
 Captura audio del sistema y lo visualiza en un VU Meter flotante
-Exporta datos para Rainmeter
 """
 
 import sys
@@ -13,14 +12,13 @@ from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QComboBox,
                              QCheckBox, QSystemTrayIcon, QMenu,
-                             QFrame, QSpinBox, QSlider)
+                             QFrame, QSpinBox)
 from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtGui import QIcon, QFont, QPixmap, QPainter, QColor, QBrush, QAction
 
 # Importar módulos locales
 from audio_capture import AudioCapture, DEVICE_REFRESH_INTERVAL
 from vu_meter_widget import VUMeterWidget, get_available_skins
-from rainmeter_export import RainmeterExporter, RainmeterSkinGenerator
 
 # Archivo de configuración persistente
 CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'vumeter_config.json')
@@ -32,7 +30,6 @@ DEFAULT_CONFIG = {
     'size_mode': 0,
     'spectrum_bands': 1,  # Índice: 0=3 bandas, 1=6 bandas, 2=12 bandas
     'always_on_top': True,
-    'rainmeter_export': True,
     'device': 'Default System Audio',
 }
 
@@ -98,21 +95,15 @@ class MainWindow(QMainWindow):
     Proporciona configuración y control del VU Meter.
     """
 
-    def __init__(self, enable_rainmeter: bool = True,
-                 rainmeter_path: str = None,
-                 simulation_mode: bool = False):
+    def __init__(self, simulation_mode: bool = False):
         """
         Inicializa la ventana principal.
 
         Args:
-            enable_rainmeter: Habilitar exportación para Rainmeter
-            rainmeter_path: Ruta personalizada para archivos de Rainmeter
             simulation_mode: Forzar modo simulación (sin captura real)
         """
         super().__init__()
 
-        self.enable_rainmeter = enable_rainmeter
-        self.rainmeter_path = rainmeter_path
         self.simulation_mode = simulation_mode
 
         # Cargar configuración persistente
@@ -126,7 +117,6 @@ class MainWindow(QMainWindow):
         # Variables
         self.vu_meter = None
         self.audio_capture = None
-        self.rainmeter_exporter = None
         self.is_running = False
 
         # Configurar UI
@@ -135,9 +125,6 @@ class MainWindow(QMainWindow):
 
         # Aplicar configuración guardada
         self._apply_saved_config()
-
-        # Inicializar componentes
-        self._init_components()
 
         # Timer para refrescar dispositivos de audio
         self.device_refresh_timer = QTimer()
@@ -232,10 +219,6 @@ class MainWindow(QMainWindow):
         main_layout.addLayout(bands_layout)
 
         # Checkboxes
-        self.rainmeter_check = QCheckBox("Exportar para Rainmeter")
-        self.rainmeter_check.setChecked(self.enable_rainmeter)
-        main_layout.addWidget(self.rainmeter_check)
-
         self.always_on_top_check = QCheckBox("Siempre visible")
         self.always_on_top_check.setChecked(True)
         main_layout.addWidget(self.always_on_top_check)
@@ -293,23 +276,6 @@ class MainWindow(QMainWindow):
         """)
         self.start_btn.clicked.connect(self._toggle_vu_meter)
         btn_layout.addWidget(self.start_btn)
-
-        self.settings_btn = QPushButton("Configurar Rainmeter")
-        self.settings_btn.setStyleSheet("""
-            QPushButton {
-                background-color: #2196F3;
-                color: white;
-                font-weight: bold;
-                padding: 10px 20px;
-                border-radius: 5px;
-                border: none;
-            }
-            QPushButton:hover {
-                background-color: #1976D2;
-            }
-        """)
-        self.settings_btn.clicked.connect(self._show_rainmeter_settings)
-        btn_layout.addWidget(self.settings_btn)
 
         main_layout.addLayout(btn_layout)
 
@@ -390,7 +356,6 @@ class MainWindow(QMainWindow):
             self.bands_combo.setCurrentIndex(bands_idx)
         # Checkboxes
         self.always_on_top_check.setChecked(cfg.get('always_on_top', True))
-        self.rainmeter_check.setChecked(cfg.get('rainmeter_export', True))
         # Dispositivo
         saved_device = cfg.get('device', 'Default System Audio')
         idx = self.device_combo.findText(saved_device)
@@ -405,7 +370,6 @@ class MainWindow(QMainWindow):
             'size_mode': self.size_combo.currentIndex(),
             'spectrum_bands': self.bands_combo.currentIndex(),
             'always_on_top': self.always_on_top_check.isChecked(),
-            'rainmeter_export': self.rainmeter_check.isChecked(),
             'device': self.device_combo.currentText(),
         }
         save_config(config)
@@ -431,12 +395,6 @@ class MainWindow(QMainWindow):
         if idx >= 0:
             self.device_combo.setCurrentIndex(idx)
         self.device_combo.blockSignals(False)
-
-    def _init_components(self):
-        """Inicializa los componentes de audio y exportación."""
-        if self.enable_rainmeter:
-            export_path = self.rainmeter_path or os.path.dirname(os.path.abspath(__file__))
-            self.rainmeter_exporter = RainmeterExporter(export_path)
 
     def _toggle_vu_meter(self):
         """Inicia o detiene el VU Meter."""
@@ -491,10 +449,6 @@ class MainWindow(QMainWindow):
             # Iniciar captura (QThread.start())
             self.audio_capture.start()
 
-            # Iniciar exportación Rainmeter
-            if self.rainmeter_check.isChecked() and self.rainmeter_exporter:
-                self.rainmeter_exporter.start_continuous_export()
-
             # Actualizar UI
             self.is_running = True
             self.start_btn.setText("Detener")
@@ -545,9 +499,6 @@ class MainWindow(QMainWindow):
             self.vu_meter.close()
             self.vu_meter = None
 
-        if self.rainmeter_exporter:
-            self.rainmeter_exporter.stop_continuous_export()
-
         # Actualizar UI
         self.is_running = False
         self.start_btn.setText("Iniciar")
@@ -597,59 +548,10 @@ class MainWindow(QMainWindow):
         if self.vu_meter:
             self.vu_meter.set_levels(left, right, left_peak, right_peak)
 
-        # Actualizar exportador Rainmeter
-        if self.rainmeter_exporter and self.rainmeter_check.isChecked():
-            self.rainmeter_exporter.update_levels(left, right, left_peak, right_peak)
-
     def _on_spectrum_data(self, left_bands: list, right_bands: list):
         """Callback para datos de espectro de frecuencias."""
         if self.vu_meter:
             self.vu_meter.set_spectrum(left_bands, right_bands)
-
-    def _show_rainmeter_settings(self):
-        """Muestra el diálogo de configuración de Rainmeter."""
-        from PyQt6.QtWidgets import QDialog, QTextEdit, QDialogButtonBox
-
-        dialog = QDialog(self)
-        dialog.setWindowTitle("Configurar Rainmeter")
-        dialog.setMinimumSize(500, 400)
-
-        layout = QVBoxLayout(dialog)
-
-        # Instrucciones
-        instructions = QLabel(
-            "Instrucciones para usar con Rainmeter:\n\n"
-            "1. Haz clic en 'Generar Skin' para crear los archivos del skin\n"
-            "2. Copia la carpeta generada a: Documents/Rainmeter/Skins/\n"
-            "3. En Rainmeter, haz clic derecho -> Refresh all\n"
-            "4. Carga el skin 'PythonVUMeter'\n"
-            "5. Inicia el VU Meter desde esta aplicación"
-        )
-        instructions.setStyleSheet("padding: 10px; background-color: #f5f5f5; border-radius: 5px;")
-        layout.addWidget(instructions)
-
-        # Botón generar
-        def generate_skin():
-            skin_path = RainmeterSkinGenerator.generate_led_skin(
-                os.path.dirname(os.path.abspath(__file__))
-            )
-            result_label.setText(f"Skin generado en:\n{skin_path}")
-
-        gen_btn = QPushButton("Generar Skin Rainmeter")
-        gen_btn.clicked.connect(generate_skin)
-        layout.addWidget(gen_btn)
-
-        # Resultado
-        result_label = QLabel()
-        result_label.setStyleSheet("padding: 10px; background-color: #e8f5e9; border-radius: 5px;")
-        layout.addWidget(result_label)
-
-        # Botones del diálogo
-        buttons = QDialogButtonBox(QDialogButtonBox.StandardButton.Close)
-        buttons.rejected.connect(dialog.reject)
-        layout.addWidget(buttons)
-
-        dialog.exec()
 
     def closeEvent(self, event):
         """Maneja el cierre de la ventana."""
@@ -679,16 +581,6 @@ def main():
         description='VU Meter - Visualizador de audio del sistema'
     )
     parser.add_argument(
-        '--no-rainmeter',
-        action='store_true',
-        help='Deshabilitar exportación para Rainmeter'
-    )
-    parser.add_argument(
-        '--rainmeter-path',
-        type=str,
-        help='Ruta para guardar archivos de Rainmeter'
-    )
-    parser.add_argument(
         '--simulation',
         action='store_true',
         help='Usar modo simulación (sin captura de audio real)'
@@ -710,8 +602,6 @@ def main():
 
     # Crear ventana principal
     window = MainWindow(
-        enable_rainmeter=not args.no_rainmeter,
-        rainmeter_path=args.rainmeter_path,
         simulation_mode=args.simulation
     )
 
