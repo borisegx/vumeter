@@ -1,0 +1,12 @@
+{
+  "name": "Ocean",
+  "description": "Degradado de azul profundo a cian claro",
+  "led_colors": [
+    {"range": [0, 40], "color": [0, 80, 180]},
+    {"range": [40, 70], "color": [0, 160, 220]},
+    {"range": [70, 90], "color": [0, 220, 240]},
+    {"range": [90, 100], "color": [100, 255, 255]}
+  ],
+  "background": [10, 15, 30],
+  "peak_color": [0, 255, 255]
+}

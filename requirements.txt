@@ -1,0 +1,11 @@
+# VU Meter - Requisitos
+# Instalación: pip install -r requirements.txt
+
+# PyQt6 - Interfaz gráfica y manejo de hilos
+PyQt6>=6.5.0
+
+# NumPy - Cálculos numéricos y RMS
+numpy>=1.20.0
+
+# PyAudioWPatch - Captura de audio WASAPI Loopback nativa en Windows
+PyAudioWPatch>=0.2.12

@@ -1,0 +1,12 @@
+{
+  "name": "Fire",
+  "description": "Degradado de rojo oscuro a amarillo brillante",
+  "led_colors": [
+    {"range": [0, 30], "color": [140, 20, 0]},
+    {"range": [30, 60], "color": [220, 80, 0]},
+    {"range": [60, 85], "color": [255, 160, 0]},
+    {"range": [85, 100], "color": [255, 240, 50]}
+  ],
+  "background": [25, 10, 5],
+  "peak_color": [255, 255, 200]
+}

@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Virtual environments
+venv/
+.venv/
+
+# IDE
+.vscode/
+*.code-workspace
+
+# Generated data files
+audio_levels.json
+audio_levels.inc
+vumeter_config.json
+
+# Claude
+.claude/
+
+# OS
+Thumbs.db
+Desktop.ini

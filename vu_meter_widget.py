@@ -1,0 +1,859 @@
+"""
+VU Meter Widget - Widget visual estilo LED para PyQt6
+Muestra los niveles de audio con LEDs y efectos visuales
+"""
+
+from PyQt6.QtWidgets import (QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+                             QFrame, QGraphicsDropShadowEffect)
+from PyQt6.QtCore import Qt, QTimer, pyqtSignal, QPointF, QRectF
+from PyQt6.QtGui import (QPainter, QColor, QBrush, QPen, QLinearGradient,
+                         QRadialGradient, QPainterPath, QFont)
+import json
+import math
+import os
+
+# Constantes de visualización
+SMOOTHING_FACTOR = 0.3           # Factor de interpolación lineal (lerp)
+MAX_PEAK_DECAY = 0.001           # Velocidad de caída del peak absoluto por frame
+RENDER_FPS = 60                  # Frames por segundo del timer de renderizado
+RENDER_INTERVAL_MS = 16          # ~60 FPS (1000/60)
+SPECTRUM_LEDS = 8                # LEDs por barra de espectro (large)
+SPECTRUM_LEDS_SMALL = 5          # LEDs por barra de espectro (small)
+
+def spectrum_color(index: int, total: int) -> QColor:
+    """Genera color HSV para banda de espectro (rojo→púrpura, cálido→frío)."""
+    if total <= 1:
+        return QColor.fromHsv(0, 255, 220)
+    hue = int(index / (total - 1) * 270)  # 0° rojo → 270° púrpura
+    return QColor.fromHsv(hue, 255, 220)
+
+# Dimensiones por modo de tamaño
+SIZE_CONFIG = {
+    'large': {'led_size': 12, 'led_spacing': 3, 'border_radius': 4, 'window': (220, 420)},
+    'small': {'led_size': 6,  'led_spacing': 2, 'border_radius': 2, 'window': (120, 240)},
+}
+
+# Directorio de skins
+SKINS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'skins')
+
+
+def load_skins():
+    """Carga todos los skins JSON del directorio skins/."""
+    skins = {}
+    if not os.path.isdir(SKINS_DIR):
+        return skins
+    for filename in os.listdir(SKINS_DIR):
+        if filename.endswith('.json'):
+            filepath = os.path.join(SKINS_DIR, filename)
+            try:
+                with open(filepath, 'r', encoding='utf-8') as f:
+                    skin_data = json.load(f)
+                name = skin_data.get('name', filename.replace('.json', ''))
+                skins[name.lower()] = skin_data
+            except Exception:
+                pass
+    return skins
+
+
+def get_available_skins():
+    """Retorna lista de nombres de skins disponibles (builtin + JSON)."""
+    builtin = ['classic', 'green', 'blue', 'purple', 'rainbow']
+    custom = list(load_skins().keys())
+    return builtin + [s for s in custom if s not in builtin]
+
+
+class LEDBar(QWidget):
+    """
+    Barra de LEDs individual para mostrar un canal de audio.
+    Incluye indicador de peak con hold.
+    """
+
+    def __init__(self, num_leds: int = 20, orientation: str = 'vertical',
+                 color_scheme: str = 'classic', size_mode: str = 'large', parent=None):
+        super().__init__(parent)
+
+        self.num_leds = num_leds
+        self.orientation = orientation
+        self.color_scheme = color_scheme
+
+        # Niveles (0.0 - 1.0)
+        self.level = 0.0
+        self.target_level = 0.0
+        self.peak_level = 0.0
+        self.max_peak_level = 0.0
+
+        self.size_mode = size_mode
+        cfg = SIZE_CONFIG.get(size_mode, SIZE_CONFIG['large'])
+        self.led_size = cfg['led_size']
+        self.led_spacing = cfg['led_spacing']
+        self.border_radius = cfg['border_radius']
+
+        # Esquemas de color builtin
+        self._builtin_schemes = {
+            'classic': self._classic_colors,
+            'green': self._green_colors,
+            'blue': self._blue_colors,
+            'purple': self._purple_colors,
+            'rainbow': self._rainbow_colors
+        }
+
+        # Cargar skins JSON externos
+        self._custom_skins = load_skins()
+
+        # Tamaño mínimo
+        if orientation == 'vertical':
+            self.setMinimumWidth(self.led_size + 10)
+            self.setMinimumHeight((self.led_size + self.led_spacing) * num_leds + 10)
+        else:
+            self.setMinimumHeight(self.led_size + 10)
+            self.setMinimumWidth((self.led_size + self.led_spacing) * num_leds + 10)
+
+    def _classic_colors(self, index: int, total: int) -> QColor:
+        """Esquema clásico: verde -> amarillo -> rojo"""
+        ratio = index / total
+        if ratio < 0.6:
+            return QColor(0, 200, 0)  # Verde
+        elif ratio < 0.8:
+            return QColor(255, 200, 0)  # Amarillo
+        else:
+            return QColor(255, 50, 50)  # Rojo
+
+    def _green_colors(self, index: int, total: int) -> QColor:
+        """Esquema verde con degradado"""
+        ratio = index / total
+        intensity = int(100 + 155 * ratio)
+        return QColor(0, intensity, 50)
+
+    def _blue_colors(self, index: int, total: int) -> QColor:
+        """Esquema azul con degradado"""
+        ratio = index / total
+        intensity = int(100 + 155 * ratio)
+        return QColor(50, intensity, 255)
+
+    def _purple_colors(self, index: int, total: int) -> QColor:
+        """Esquema púrpura con degradado"""
+        ratio = index / total
+        intensity = int(100 + 155 * ratio)
+        return QColor(150, 50, intensity)
+
+    def _rainbow_colors(self, index: int, total: int) -> QColor:
+        """Esquema arcoíris"""
+        hue = int((index / total) * 270)  # 0-270 grados (rojo a púrpura)
+        return QColor.fromHsv(hue, 255, 255)
+
+    def _custom_skin_colors(self, index: int, total: int) -> QColor:
+        """Obtiene color desde un skin JSON personalizado."""
+        skin = self._custom_skins.get(self.color_scheme, {})
+        led_colors = skin.get('led_colors', [])
+        ratio = (index / total) * 100
+
+        for entry in led_colors:
+            r = entry.get('range', [0, 100])
+            if r[0] <= ratio < r[1]:
+                c = entry.get('color', [0, 200, 0])
+                return QColor(c[0], c[1], c[2])
+
+        # Fallback: último color definido o verde
+        if led_colors:
+            c = led_colors[-1].get('color', [0, 200, 0])
+            return QColor(c[0], c[1], c[2])
+        return QColor(0, 200, 0)
+
+    def get_led_color(self, index: int, is_on: bool) -> QColor:
+        """Obtiene el color de un LED específico."""
+        # Intentar esquema builtin primero, luego skin JSON
+        color_func = self._builtin_schemes.get(self.color_scheme)
+        if color_func:
+            base_color = color_func(index, self.num_leds)
+        elif self.color_scheme in self._custom_skins:
+            base_color = self._custom_skin_colors(index, self.num_leds)
+        else:
+            base_color = self._classic_colors(index, self.num_leds)
+
+        if is_on:
+            return base_color
+        else:
+            return QColor(base_color.red() // 5,
+                         base_color.green() // 5,
+                         base_color.blue() // 5)
+
+    def set_level(self, level: float, peak: float = None):
+        """
+        Establece el nivel actual y el peak.
+
+        Args:
+            level: Nivel actual (0.0 - 1.0)
+            peak: Nivel de peak (opcional)
+        """
+        self.target_level = max(0.0, min(1.0, level))
+        if peak is not None:
+            self.peak_level = max(0.0, min(1.0, peak))
+            if self.peak_level > self.max_peak_level:
+                self.max_peak_level = self.peak_level
+
+    def apply_interpolation(self):
+        """Suaviza el movimiento al interpolar el nivel actual hacia el objetivo."""
+        self.level += (self.target_level - self.level) * SMOOTHING_FACTOR
+
+        self.max_peak_level -= MAX_PEAK_DECAY
+        self.max_peak_level = max(0.0, self.max_peak_level)
+
+        self.update()
+
+    def paintEvent(self, event):
+        """Dibuja la barra de LEDs."""
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+
+        # Fondo oscuro
+        painter.fillRect(self.rect(), QColor(20, 20, 25))
+
+        # Calcular posición de los LEDs
+        if self.orientation == 'vertical':
+            self._paint_vertical(painter)
+        else:
+            self._paint_horizontal(painter)
+
+    def _paint_vertical(self, painter):
+        """Dibuja LEDs en orientación vertical."""
+        led_height = self.led_size
+        led_width = self.led_size
+
+        # Centrar horizontalmente
+        start_x = (self.width() - led_width) // 2
+        start_y = self.height() - 5  # Empezar desde abajo
+
+        # Calcular el índice exacto del absolute peak y del peak balístico
+        max_peak_idx = int(self.max_peak_level * self.num_leds)
+        if max_peak_idx >= self.num_leds: max_peak_idx = self.num_leds - 1
+        if self.max_peak_level <= 0: max_peak_idx = -1
+
+        peak_idx = int(self.peak_level * self.num_leds)
+        if peak_idx >= self.num_leds: peak_idx = self.num_leds - 1
+        if self.peak_level <= 0: peak_idx = -1
+
+        for i in range(self.num_leds):
+            # Índice invertido (de abajo hacia arriba)
+            led_index = self.num_leds - 1 - i
+
+            # Posición del LED
+            y = start_y - (i + 1) * (led_height + self.led_spacing)
+            x = start_x
+
+            # Determinar si el LED está encendido
+            threshold = led_index / self.num_leds
+            is_on = self.level > threshold
+
+            # Obtener color
+            color = self.get_led_color(led_index, is_on)
+
+            # Dibujar el "LED" en cian si es el absolute peak exacto
+            is_max_peak_led = (led_index == max_peak_idx)
+            if is_max_peak_led and not is_on:
+                # Modificamos los parámetros para dibujar este solo LED brillante en cian
+                color = QColor(0, 255, 255)
+                self._draw_led(painter, x, y, led_width, led_height, color, True)
+            else:
+                # Dibujar LED normal con efecto de brillo
+                self._draw_led(painter, x, y, led_width, led_height, color, is_on)
+
+            # Dibujar indicador del peak balístico (triángulo exterior)
+            if led_index == peak_idx:
+                self._draw_peak_indicator(painter, x, y, led_width, led_height)
+
+    def _paint_horizontal(self, painter):
+        """Dibuja LEDs en orientación horizontal."""
+        led_height = self.led_size
+        led_width = self.led_size
+
+        # Centrar verticalmente
+        start_y = (self.height() - led_height) // 2
+        start_x = 5
+
+        # Calcular índices exactos para horizontal
+        max_peak_idx = int(self.max_peak_level * self.num_leds)
+        if max_peak_idx >= self.num_leds: max_peak_idx = self.num_leds - 1
+        if self.max_peak_level <= 0: max_peak_idx = -1
+
+        peak_idx = int(self.peak_level * self.num_leds)
+        if peak_idx >= self.num_leds: peak_idx = self.num_leds - 1
+        if self.peak_level <= 0: peak_idx = -1
+
+        for i in range(self.num_leds):
+            # Posición del LED
+            x = start_x + i * (led_width + self.led_spacing)
+            y = start_y
+
+            # Determinar si el LED está encendido
+            threshold = i / self.num_leds
+            is_on = self.level > threshold
+
+            # Obtener color
+            color = self.get_led_color(i, is_on)
+
+            # Dibujar el "LED" en cian si es el absolute peak exacto
+            is_max_peak_led = (i == max_peak_idx)
+            if is_max_peak_led and not is_on:
+                color = QColor(0, 255, 255)
+                self._draw_led(painter, x, y, led_width, led_height, color, True)
+            else:
+                # Dibujar LED normal
+                self._draw_led(painter, x, y, led_width, led_height, color, is_on)
+
+            # Dibujar indicador del peak balístico (triángulo exterior)
+            if i == peak_idx:
+                self._draw_peak_indicator(painter, x, y, led_width, led_height)
+
+    def _draw_led(self, painter, x, y, width, height, color, is_on):
+        """Dibuja un LED individual con efectos."""
+        # Rectángulo del LED
+        rect = QRectF(x, y, width, height)
+
+        # Borde del LED
+        painter.setPen(QPen(QColor(60, 60, 70), 1))
+
+        if is_on:
+            # LED encendido con gradiente
+            gradient = QLinearGradient(x, y, x + width, y + height)
+            gradient.setColorAt(0, color.lighter(150))
+            gradient.setColorAt(0.5, color)
+            gradient.setColorAt(1, color.darker(120))
+
+            painter.setBrush(QBrush(gradient))
+            painter.drawRoundedRect(rect, self.border_radius, self.border_radius)
+
+            # Efecto de brillo interior mejorado
+            glow_gradient = QRadialGradient(x + width/2, y + height/2, width/0.8)
+            glow_gradient.setColorAt(0, QColor(255, 255, 255, 140))
+            glow_gradient.setColorAt(0.5, QColor(255, 255, 255, 40))
+            glow_gradient.setColorAt(1, QColor(255, 255, 255, 0))
+            painter.setBrush(QBrush(glow_gradient))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(rect, self.border_radius, self.border_radius)
+
+            # Glow externo moderno (Aura)
+            aura_rect = rect.adjusted(-4, -4, 4, 4)
+            aura_color = QColor(color)
+            aura_color.setAlpha(60)
+            painter.setBrush(QBrush(aura_color))
+            painter.drawRoundedRect(aura_rect, self.border_radius + 2, self.border_radius + 2)
+        else:
+            # LED apagado
+            painter.setBrush(QBrush(color))
+            painter.drawRoundedRect(rect, self.border_radius, self.border_radius)
+
+            # Efecto de reflejo sutil
+            reflect = QLinearGradient(x, y, x, y + height/2)
+            reflect.setColorAt(0, QColor(255, 255, 255, 20))
+            reflect.setColorAt(1, QColor(255, 255, 255, 0))
+            painter.setBrush(QBrush(reflect))
+            painter.setPen(Qt.PenStyle.NoPen)
+            painter.drawRoundedRect(QRectF(x, y, width, height/2),
+                                   self.border_radius, self.border_radius)
+
+    def _draw_peak_indicator(self, painter, x, y, width, height):
+        """Dibuja el indicador de peak."""
+        # Triángulo pequeño
+        painter.setBrush(QBrush(QColor(255, 255, 255, 200)))
+        painter.setPen(Qt.PenStyle.NoPen)
+
+        if self.orientation == 'vertical':
+            # Triángulo a la izquierda
+            triangle = QPainterPath()
+            triangle.moveTo(x - 8, y + height/2)
+            triangle.lineTo(x - 3, y + 2)
+            triangle.lineTo(x - 3, y + height - 2)
+            triangle.closeSubpath()
+            painter.drawPath(triangle)
+        else:
+            # Triángulo arriba
+            triangle = QPainterPath()
+            triangle.moveTo(x + width/2, y - 6)
+            triangle.lineTo(x + 2, y - 1)
+            triangle.lineTo(x + width - 2, y - 1)
+            triangle.closeSubpath()
+            painter.drawPath(triangle)
+
+
+class SpectrumBar(QWidget):
+    """Barra horizontal LED compacta para una banda de frecuencia."""
+
+    def __init__(self, color: QColor = None, num_leds: int = SPECTRUM_LEDS,
+                 size_mode: str = 'large', parent=None):
+        super().__init__(parent)
+        self.num_leds = num_leds
+        self.level = 0.0
+        self.target_level = 0.0
+
+        self.color = color or QColor(0, 200, 0)
+
+        if size_mode == 'small':
+            self.led_size = 4
+            self.led_spacing = 1
+        else:
+            self.led_size = 7
+            self.led_spacing = 2
+
+        self.border_radius = 2
+        bar_width = num_leds * (self.led_size + self.led_spacing)
+        self.setFixedSize(bar_width, self.led_size + 4)
+
+    def set_level(self, level: float):
+        self.target_level = max(0.0, min(1.0, level))
+
+    def apply_interpolation(self):
+        self.level += (self.target_level - self.level) * SMOOTHING_FACTOR
+        self.update()
+
+    def paintEvent(self, event):
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        y = (self.height() - self.led_size) // 2
+
+        for i in range(self.num_leds):
+            x = i * (self.led_size + self.led_spacing)
+            threshold = i / self.num_leds
+            is_on = self.level > threshold
+
+            rect = QRectF(x, y, self.led_size, self.led_size)
+            painter.setPen(QPen(QColor(50, 50, 60), 1))
+
+            if is_on:
+                gradient = QLinearGradient(x, y, x + self.led_size, y + self.led_size)
+                gradient.setColorAt(0, self.color.lighter(140))
+                gradient.setColorAt(0.5, self.color)
+                gradient.setColorAt(1, self.color.darker(120))
+                painter.setBrush(QBrush(gradient))
+                painter.drawRoundedRect(rect, self.border_radius, self.border_radius)
+
+                # Glow sutil
+                glow = QColor(self.color)
+                glow.setAlpha(45)
+                painter.setBrush(QBrush(glow))
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.drawRoundedRect(rect.adjusted(-2, -2, 2, 2),
+                                       self.border_radius + 1, self.border_radius + 1)
+            else:
+                dim = QColor(self.color.red() // 6, self.color.green() // 6, self.color.blue() // 6)
+                painter.setBrush(QBrush(dim))
+                painter.drawRoundedRect(rect, self.border_radius, self.border_radius)
+
+
+class VUMeterWidget(QWidget):
+    """
+    Widget completo de VU Meter con dos canales (L/R).
+    Incluye etiquetas de canal, escala dB y analizador de espectro.
+    """
+
+    # Señal emitida cuando cambian los niveles
+    levels_changed = pyqtSignal(float, float, float, float)  # L, R, L_peak, R_peak
+
+    def __init__(self, num_leds: int = 20, color_scheme: str = 'classic',
+                 show_scale: bool = True, size_mode: str = 'large',
+                 num_bands: int = 6, parent=None):
+        """
+        Inicializa el widget VU Meter.
+
+        Args:
+            num_leds: Número de LEDs por canal
+            color_scheme: Esquema de colores
+            show_scale: Mostrar escala en dB
+            num_bands: Número de bandas de espectro (3, 6 o 12)
+        """
+        super().__init__(parent)
+
+        self.num_leds = num_leds
+        self.color_scheme = color_scheme
+        self.show_scale = show_scale
+        self.size_mode = size_mode
+        self.num_bands = num_bands
+
+        # Configurar ventana flotante
+        self.setWindowFlags(
+            Qt.WindowType.WindowStaysOnTopHint |
+            Qt.WindowType.FramelessWindowHint |
+            Qt.WindowType.Tool
+        )
+        self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
+        self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating)
+
+        # Niveles actuales
+        self.left_level = 0.0
+        self.right_level = 0.0
+        self.left_peak = 0.0
+        self.right_peak = 0.0
+
+        # Configurar UI
+        self._setup_ui()
+
+        # Efecto de sombra para la ventana flotante (Neon / Elevación)
+        shadow = QGraphicsDropShadowEffect(self)
+        shadow.setBlurRadius(20)
+        shadow.setColor(QColor(0, 0, 0, 180))
+        shadow.setOffset(0, 5)
+        self.findChild(QFrame, "container").setGraphicsEffect(shadow)
+
+        # Timer para decaimiento suave y animaciones fluidas
+        self.decay_timer = QTimer()
+        self.decay_timer.timeout.connect(self._apply_decay)
+        self.decay_timer.start(RENDER_INTERVAL_MS)
+
+        # Permitir arrastrar la ventana
+        self.drag_position = None
+
+    def _setup_ui(self):
+        """Configura la interfaz del widget."""
+        # Layout principal
+        main_layout = QHBoxLayout(self)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(5)
+
+        # Contenedor principal con fondo
+        container = QFrame()
+        container.setObjectName("container")
+        container.setStyleSheet("""
+            QFrame#container {
+                background-color: rgba(25, 25, 30, 220);
+                border-radius: 12px;
+                border: 1px solid rgba(80, 80, 100, 150);
+            }
+        """)
+
+        container_layout = QVBoxLayout(container)
+        if self.size_mode == 'small':
+            container_layout.setContentsMargins(8, 10, 8, 10)
+            container_layout.setSpacing(6)
+        else:
+            container_layout.setContentsMargins(15, 20, 15, 20)
+            container_layout.setSpacing(12)
+
+        # Título
+        title_font_size = "9px" if self.size_mode == 'small' else "13px"
+        title = QLabel("VU METER")
+        title.setStyleSheet(f"""
+            QLabel {{
+                color: #A0A0B0;
+                font-size: {title_font_size};
+                font-weight: 800;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                letter-spacing: 3px;
+            }}
+        """)
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        container_layout.addWidget(title)
+
+        # Layout para los canales
+        channels_layout = QHBoxLayout()
+        channels_layout.setSpacing(10 if self.size_mode == 'small' else 20)
+
+        # Canal izquierdo
+        left_channel = self._create_channel_widget("L", "left")
+        self.left_bar = left_channel.findChild(LEDBar, "left_bar")
+        channels_layout.addWidget(left_channel)
+
+        # Escala central (opcional)
+        if self.show_scale:
+            scale_widget = self._create_scale_widget()
+            channels_layout.addWidget(scale_widget)
+
+        # Canal derecho
+        right_channel = self._create_channel_widget("R", "right")
+        self.right_bar = right_channel.findChild(LEDBar, "right_bar")
+        channels_layout.addWidget(right_channel)
+
+        container_layout.addLayout(channels_layout)
+
+        # Etiqueta de dB
+        db_font_size = "8px" if self.size_mode == 'small' else "11px"
+        self.db_label = QLabel("-\u221e dB")
+        self.db_label.setStyleSheet(f"""
+            QLabel {{
+                color: #9090A0;
+                font-size: {db_font_size};
+                font-weight: bold;
+                font-family: 'Consolas', monospace;
+            }}
+        """)
+        self.db_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        container_layout.addWidget(self.db_label)
+
+        # --- SECCIÓN DE ESPECTRO ---
+        separator = QFrame()
+        separator.setFrameShape(QFrame.Shape.HLine)
+        separator.setStyleSheet("background-color: rgba(80, 80, 100, 100);")
+        separator.setFixedHeight(1)
+        container_layout.addWidget(separator)
+
+        spec_title_size = "7px" if self.size_mode == 'small' else "10px"
+        spec_title = QLabel("SPECTRUM")
+        spec_title.setStyleSheet(f"""
+            QLabel {{
+                color: #808090;
+                font-size: {spec_title_size};
+                font-weight: 700;
+                font-family: 'Segoe UI', Arial, sans-serif;
+                letter-spacing: 2px;
+            }}
+        """)
+        spec_title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        container_layout.addWidget(spec_title)
+
+        from audio_capture import SPECTRUM_PRESETS
+        preset = SPECTRUM_PRESETS.get(self.num_bands, SPECTRUM_PRESETS[6])
+        band_labels = preset['labels']
+
+        self.left_spectrum_bars = []
+        self.right_spectrum_bars = []
+        num_spec_leds = SPECTRUM_LEDS_SMALL if self.size_mode == 'small' else SPECTRUM_LEDS
+        hz_font_size = "6px" if self.size_mode == 'small' else "8px"
+        hz_label_width = 24 if self.size_mode == 'small' else 30
+
+        for i, hz_text in enumerate(band_labels):
+            row = QHBoxLayout()
+            row.setSpacing(2)
+            row.setContentsMargins(0, 0, 0, 0)
+
+            color = spectrum_color(i, len(band_labels))
+            left_bar = SpectrumBar(color=color, num_leds=num_spec_leds, size_mode=self.size_mode)
+            self.left_spectrum_bars.append(left_bar)
+            row.addWidget(left_bar)
+
+            hz_lbl = QLabel(hz_text)
+            hz_lbl.setStyleSheet(f"""
+                QLabel {{
+                    color: #606070;
+                    font-size: {hz_font_size};
+                    font-weight: bold;
+                    font-family: 'Consolas', monospace;
+                }}
+            """)
+            hz_lbl.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            hz_lbl.setFixedWidth(hz_label_width)
+            row.addWidget(hz_lbl)
+
+            right_bar = SpectrumBar(color=color, num_leds=num_spec_leds, size_mode=self.size_mode)
+            self.right_spectrum_bars.append(right_bar)
+            row.addWidget(right_bar)
+
+            container_layout.addLayout(row)
+
+        main_layout.addWidget(container)
+
+        # Tamaño dinámico según número de bandas de espectro
+        if self.size_mode == 'small':
+            height = 268 + self.num_bands * 12
+            self.setFixedSize(120, height)
+        else:
+            height = 452 + self.num_bands * 18
+            self.setFixedSize(220, height)
+
+    def _create_channel_widget(self, label: str, name: str) -> QWidget:
+        """Crea un widget de canal con etiqueta y barra LED."""
+        widget = QWidget()
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(5)
+
+        # Etiqueta del canal
+        label_font_size = "10px" if self.size_mode == 'small' else "14px"
+        channel_label = QLabel(label)
+        channel_label.setStyleSheet(f"""
+            QLabel {{
+                color: #C0C0D0;
+                font-size: {label_font_size};
+                font-weight: 900;
+                font-family: 'Segoe UI', Arial, sans-serif;
+            }}
+        """)
+        channel_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        layout.addWidget(channel_label)
+
+        # Barra de LEDs
+        led_bar = LEDBar(
+            num_leds=self.num_leds,
+            orientation='vertical',
+            color_scheme=self.color_scheme,
+            size_mode=self.size_mode
+        )
+        led_bar.setObjectName(f"{name}_bar")
+        layout.addWidget(led_bar, 1)
+
+        # Valor numérico
+        value_label = QLabel("0.00")
+        value_label.setStyleSheet("""
+            QLabel {
+                color: #888;
+                font-size: 10px;
+                font-family: monospace;
+            }
+        """)
+        value_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        value_label.setObjectName(f"{name}_value")
+        layout.addWidget(value_label)
+
+        return widget
+
+    def _create_scale_widget(self) -> QWidget:
+        """Crea el widget de escala en dB distribuida uniformemente."""
+        widget = QWidget()
+        widget.setFixedWidth(30)
+
+        layout = QVBoxLayout(widget)
+        layout.setContentsMargins(0, 5, 0, 5)
+        layout.setSpacing(0)
+
+        # Valores de escala
+        db_values = ['0', '-3', '-6', '-12', '-18', '-24', '-36', '-48', '-\u221e']
+        scale_font_size = "7px" if self.size_mode == 'small' else "9px"
+
+        for i, db in enumerate(db_values):
+            label = QLabel(db)
+            label.setStyleSheet(f"""
+                QLabel {{
+                    color: #707080;
+                    font-size: {scale_font_size};
+                    font-weight: bold;
+                    font-family: 'Consolas', monospace;
+                }}
+            """)
+            label.setAlignment(Qt.AlignmentFlag.AlignHCenter | Qt.AlignmentFlag.AlignVCenter)
+            layout.addWidget(label)
+            # Separador elástico entre cada etiqueta (excepto después de la última)
+            if i < len(db_values) - 1:
+                layout.addStretch(1)
+
+        return widget
+
+    def set_levels(self, left: float, right: float,
+                   left_peak: float = None, right_peak: float = None):
+        """
+        Establece los niveles de audio.
+
+        Args:
+            left: Nivel canal izquierdo (0.0 - 1.0)
+            right: Nivel canal derecho (0.0 - 1.0)
+            left_peak: Peak izquierdo (opcional)
+            right_peak: Peak derecho (opcional)
+        """
+        self.left_level = left
+        self.right_level = right
+
+        if left_peak is not None:
+            self.left_peak = left_peak
+        if right_peak is not None:
+            self.right_peak = right_peak
+
+        # Actualizar barras
+        self.left_bar.set_level(self.left_level, self.left_peak)
+        self.right_bar.set_level(self.right_level, self.right_peak)
+
+        # Actualizar etiquetas de valor
+        left_value = self.findChild(QLabel, "left_value")
+        right_value = self.findChild(QLabel, "right_value")
+        if left_value:
+            left_value.setText(f"{self.left_level:.2f}")
+        if right_value:
+            right_value.setText(f"{self.right_level:.2f}")
+
+        # Actualizar dB
+        max_level = max(self.left_level, self.right_level)
+        if max_level > 0:
+            db = 20 * math.log10(max_level)
+            self.db_label.setText(f"{db:.1f} dB")
+        else:
+            self.db_label.setText("-\u221e dB")
+
+        # Emitir señal
+        self.levels_changed.emit(self.left_level, self.right_level,
+                                self.left_peak, self.right_peak)
+
+    def set_spectrum(self, left_bands: list, right_bands: list):
+        """Establece los niveles de las bandas de frecuencia."""
+        for i, level in enumerate(left_bands):
+            if i < len(self.left_spectrum_bars):
+                self.left_spectrum_bars[i].set_level(level)
+        for i, level in enumerate(right_bands):
+            if i < len(self.right_spectrum_bars):
+                self.right_spectrum_bars[i].set_level(level)
+
+    def _apply_decay(self):
+        """Aplica decaimiento suave a los niveles e interpola visualmente."""
+        if hasattr(self, 'left_bar'):
+            self.left_bar.apply_interpolation()
+        if hasattr(self, 'right_bar'):
+            self.right_bar.apply_interpolation()
+        for bar in getattr(self, 'left_spectrum_bars', []):
+            bar.apply_interpolation()
+        for bar in getattr(self, 'right_spectrum_bars', []):
+            bar.apply_interpolation()
+
+    def mousePressEvent(self, event):
+        """Permite arrastrar la ventana."""
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.drag_position = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
+            event.accept()
+
+    def mouseMoveEvent(self, event):
+        """Mueve la ventana al arrastrar."""
+        if event.buttons() & Qt.MouseButton.LeftButton and self.drag_position:
+            self.move(event.globalPosition().toPoint() - self.drag_position)
+            event.accept()
+
+    def mouseDoubleClickEvent(self, event):
+        """Cierra la ventana con doble clic."""
+        self.close()
+
+    def contextMenuEvent(self, event):
+        """Muestra menú contextual."""
+        from PyQt6.QtWidgets import QMenu
+
+        menu = QMenu(self)
+
+        # Opciones de color (builtin + custom skins)
+        color_menu = menu.addMenu("Color Scheme")
+        for scheme in get_available_skins():
+            action = color_menu.addAction(scheme.capitalize())
+            action.triggered.connect(lambda checked, s=scheme: self._change_color(s))
+
+        menu.addSeparator()
+
+        close_action = menu.addAction("Close")
+        close_action.triggered.connect(self.close)
+
+        menu.exec(event.globalPos())
+
+    def _change_color(self, scheme: str):
+        """Cambia el esquema de colores."""
+        self.color_scheme = scheme
+        self.left_bar.color_scheme = scheme
+        self.right_bar.color_scheme = scheme
+        self.left_bar.update()
+        self.right_bar.update()
+
+
+# Prueba del widget
+if __name__ == "__main__":
+    from PyQt6.QtWidgets import QApplication
+    import sys
+
+    app = QApplication(sys.argv)
+
+    # Crear y mostrar el widget
+    meter = VUMeterWidget(num_leds=20, color_scheme='classic')
+    meter.show()
+
+    # Simular niveles
+    import math
+    t = 0
+
+    def update():
+        global t
+        t += 0.1
+        level = 0.5 + 0.3 * math.sin(t)
+        meter.set_levels(level, level * 0.8, level * 1.1, level * 0.9)
+
+    timer = QTimer()
+    timer.timeout.connect(update)
+    timer.start(50)
+
+    sys.exit(app.exec())

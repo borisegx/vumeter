@@ -1,0 +1,194 @@
+# VU Meter para Windows
+
+Un medidor de volumen (VU Meter) flotante para Windows que captura **todo el audio del sistema** y lo visualiza en tiempo real con estilo LED. Incluye analizador de espectro por frecuencias e integración con **Rainmeter**.
+
+## Caracteristicas
+
+- **Captura WASAPI Loopback** - Intercepta el audio de salida del sistema sin necesidad de micrófono, usando `pyaudiowpatch` con WASAPI nativo.
+- **Seleccion de dispositivo** - Escoge qué tarjeta de sonido o salida de audio interceptar (speakers, auriculares, interfaces de audio).
+- **Estilo LED profesional** - Animaciones a 60 FPS con interpolacion suave, fisica resistiva balistica y efecto glow.
+- **Marcador Absolute Peak** - El pico maximo historico se ilumina permanentemente en color cian brillante.
+- **Analizador de espectro** - Visualizacion de frecuencias por canal (L/R) con barras horizontales LED por banda.
+- **Bandas configurables** - Elige entre 3 bandas (Low/Mid/High), 6 bandas o 12 bandas con distribucion por tercios de octava.
+- **Tamaños dinamicos** - Alterna entre tamaño Grande o Pequeño.
+- **Ventana flotante** - Siempre visible, arrastrable a cualquier posicion.
+- **Esquemas de colores** - Classic, Green, Blue, Purple, Rainbow y skins JSON personalizados.
+- **Integracion Rainmeter** - Exporta datos en JSON e INI para usar con skins personalizados.
+
+## Requisitos
+
+- **Windows 10/11**
+- **Python 3.10+**
+- **Rainmeter** (opcional, para integracion)
+
+## Instalacion
+
+### 1. Clonar el repositorio
+
+```bash
+git clone https://github.com/borisegx/vumeter.git
+cd vumeter
+```
+
+### 2. Crear entorno virtual (recomendado)
+
+```bash
+python -m venv venv
+venv\Scripts\activate
+```
+
+### 3. Instalar dependencias
+
+```bash
+pip install -r requirements.txt
+```
+
+Las dependencias principales son:
+
+| Paquete | Uso |
+|---------|-----|
+| `PyQt6` | Interfaz grafica y manejo de hilos |
+| `numpy` | Calculos numericos, RMS y FFT |
+| `PyAudioWPatch` | Captura de audio WASAPI Loopback nativa |
+
+## Uso
+
+### Inicio silencioso sin consola (recomendado)
+
+Doble clic en:
+```
+Start VUMeter.bat
+```
+
+O de forma manual:
+```bash
+pythonw start_vumeter.pyw
+```
+
+### Inicio desde terminal (debug)
+
+```bash
+python app.py
+```
+
+### Modo simulacion (sin hardware de audio)
+
+```bash
+python app.py --simulation
+```
+
+## Controles
+
+| Accion | Resultado |
+|--------|-----------|
+| **Arrastrar** | Mueve la ventana flotante |
+| **Doble clic** | Cierra el VU Meter |
+| **Clic derecho** | Menu de opciones (cambiar color) |
+| **Icono en bandeja** | Clic derecho para menu del sistema |
+
+## Analizador de espectro
+
+El analizador de espectro descompone la senal de audio en bandas de frecuencia usando FFT (Fast Fourier Transform) con ventana Hann y normalizacion Parseval. Cada canal (L/R) tiene sus propias barras de frecuencia.
+
+### Modos disponibles
+
+| Modo | Bandas | Descripcion |
+|------|--------|-------------|
+| **3 bandas** | Low / Mid / High | Vista simplificada: graves, medios, agudos |
+| **6 bandas** | 20, 100, 350, 1k, 5k, 10k Hz | Vista estandar por rangos clasicos |
+| **12 bandas** | 20, 60, 150, 300, 500, 1k, 2k, 4k, 6k, 8k, 12k, 16k Hz | Vista detallada por tercios de octava |
+
+El modo de 12 bandas ofrece mayor granularidad especialmente en frecuencias bajas y medias, donde la informacion musical es mas densa.
+
+## Esquemas de colores
+
+| Esquema | Descripcion |
+|---------|-------------|
+| **Classic** | Verde, Amarillo, Rojo (estudio profesional) |
+| **Green** | Degradado de verdes |
+| **Blue** | Degradado de azules |
+| **Purple** | Degradado de purpuras |
+| **Rainbow** | Arcoiris completo |
+
+Tambien soporta **skins JSON personalizados** colocados en el directorio `skins/`.
+
+## Integracion con Rainmeter
+
+### Instalacion del skin
+
+1. Abre la aplicacion y haz clic en "Configurar Rainmeter"
+2. Haz clic en "Generar Skin Rainmeter"
+3. Copia la carpeta `PythonVUMeter` a `Documents\Rainmeter\Skins\`
+4. En Rainmeter, clic derecho > Refresh all
+5. Carga el skin PythonVUMeter
+6. Inicia el VU Meter desde la aplicacion
+
+### Archivos exportados
+
+| Archivo | Formato | Contenido |
+|---------|---------|-----------|
+| `audio_levels.json` | JSON | Niveles L/R, peaks, dB, porcentajes |
+| `audio_levels.inc` | INI | Variables Rainmeter directas |
+
+## Estructura del proyecto
+
+```
+vumeter/
+├── app.py                 # Ventana de configuracion (motor principal)
+├── audio_capture.py       # Captura de audio WASAPI + analisis FFT
+├── vu_meter_widget.py     # Widget visual LED, espectro y animaciones
+├── rainmeter_export.py    # Exportacion de datos para Rainmeter
+├── start_vumeter.pyw      # Punto de entrada sin consola
+├── start.bat              # Inicio con consola (debug)
+├── Start VUMeter.bat      # Inicio silencioso
+├── install.bat            # Script de instalacion automatica
+├── requirements.txt       # Dependencias Python
+├── skins/                 # Skins JSON personalizados
+│   ├── fire.json
+│   ├── neon.json
+│   ├── ocean.json
+│   └── mint.json
+└── PythonVUMeter/         # Skin de Rainmeter generado
+```
+
+## Opciones de linea de comandos
+
+```
+python app.py [-h] [--no-rainmeter] [--rainmeter-path PATH] [--simulation] [--hidden]
+
+Opciones:
+  --no-rainmeter        Deshabilitar exportacion para Rainmeter
+  --rainmeter-path PATH Ruta para guardar archivos de Rainmeter
+  --simulation          Usar modo simulacion (sin captura de audio real)
+  --hidden              Iniciar minimizado en la bandeja
+```
+
+## Solucion de problemas
+
+### "No se captura audio"
+
+1. Asegurate de haber seleccionado el dispositivo correcto en el menu principal.
+2. Verifica que `PyAudioWPatch` se haya instalado correctamente.
+3. El motor usa WASAPI Loopback nativo. Si no encuentra un dispositivo loopback, activara automaticamente el modo simulacion.
+
+### "El skin de Rainmeter no muestra datos"
+
+1. Verifica que la aplicacion Python este ejecutandose.
+2. Comprueba que `audio_levels.json` existe y se actualiza.
+3. Refresca el skin en Rainmeter.
+
+### "La ventana no aparece"
+
+- Revisa la bandeja del sistema (junto al reloj).
+- Ejecuta sin `--hidden`.
+
+## Licencia
+
+MIT License - Libre para usar y modificar.
+
+## Creditos
+
+- **PyQt6** - Framework de interfaz grafica
+- **PyAudioWPatch** - Captura de audio WASAPI Loopback nativa
+- **NumPy** - Calculos numericos, RMS y FFT
+- **Rainmeter** - Plataforma de personalizacion de escritorio
