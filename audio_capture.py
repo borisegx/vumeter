@@ -237,23 +237,17 @@ class AudioCapture(QThread):
         return bands
 
     def _process_audio(self, data):
-        """Calcula RMS (barra) y True Peak (indicador de pico) de la señal."""
+        """Calcula RMS de la señal y emite niveles normalizados."""
         # Evitar errores si el hardware entrega un solo canal
         if data.shape[1] >= 2:
             left_rms = np.sqrt(np.mean(data[:, 0]**2))
             right_rms = np.sqrt(np.mean(data[:, 1]**2))
-            # True Peak: máximo absoluto de las muestras (pico real de la señal)
-            left_true_peak = float(np.max(np.abs(data[:, 0])))
-            right_true_peak = float(np.max(np.abs(data[:, 1])))
         else:
             left_rms = right_rms = np.sqrt(np.mean(data[:, 0]**2))
-            left_true_peak = right_true_peak = float(np.max(np.abs(data[:, 0])))
 
         # Normalizar a escala de display (dB → 0.0-1.0)
         left = self._rms_to_display(left_rms)
         right = self._rms_to_display(right_rms)
-        left_tp = self._rms_to_display(left_true_peak)
-        right_tp = self._rms_to_display(right_true_peak)
 
         # Cálculo del tiempo delta para una física independiente del framerate
         current_time = time.time()
@@ -263,15 +257,15 @@ class AudioCapture(QThread):
         # Inercia balística mediante decaimiento exponencial
         decay_factor = np.exp(-self.decay_rate * dt)
 
-        # Peak balístico con hold: retiene el pico PEAK_HOLD_TIME seg antes de decaer
-        if left_tp >= self.left_peak:
-            self.left_peak = left_tp
+        # Peak balístico sobre RMS: marca hasta dónde llegó la barra
+        if left >= self.left_peak:
+            self.left_peak = left
             self.left_peak_time = current_time
         elif current_time - self.left_peak_time > PEAK_HOLD_TIME:
             self.left_peak *= decay_factor
 
-        if right_tp >= self.right_peak:
-            self.right_peak = right_tp
+        if right >= self.right_peak:
+            self.right_peak = right
             self.right_peak_time = current_time
         elif current_time - self.right_peak_time > PEAK_HOLD_TIME:
             self.right_peak *= decay_factor
@@ -308,23 +302,20 @@ class AudioCapture(QThread):
             base = 0.3 + 0.2 * np.sin(t * 0.5)
             left = min(1.0, max(0.0, base + 0.1 * np.sin(t * 7)))
             right = min(1.0, max(0.0, base - 0.1 * np.sin(t * 3)))
-            # Simular true peak ligeramente más alto que RMS
-            left_tp = min(1.0, left + 0.08)
-            right_tp = min(1.0, right + 0.08)
 
             current_time = time.time()
             dt = current_time - self.last_time
             self.last_time = current_time
 
             decay_factor = np.exp(-self.decay_rate * dt)
-            if left_tp >= self.left_peak:
-                self.left_peak = left_tp
+            if left >= self.left_peak:
+                self.left_peak = left
                 self.left_peak_time = current_time
             elif current_time - self.left_peak_time > PEAK_HOLD_TIME:
                 self.left_peak *= decay_factor
 
-            if right_tp >= self.right_peak:
-                self.right_peak = right_tp
+            if right >= self.right_peak:
+                self.right_peak = right
                 self.right_peak_time = current_time
             elif current_time - self.right_peak_time > PEAK_HOLD_TIME:
                 self.right_peak *= decay_factor
