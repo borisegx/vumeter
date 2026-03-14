@@ -993,12 +993,12 @@ class VUMeterWidget(QWidget):
         if hasattr(self, 'right_bar'):
             self.right_bar.apply_interpolation()
 
-        # Actualizar dB usando el nivel suavizado (consistente con los LEDs)
+        # Mostrar peak dBFS (true peak balístico, no RMS)
         if hasattr(self, 'left_bar') and hasattr(self, 'right_bar'):
-            smoothed = max(self.left_bar.level, self.right_bar.level)
-            if smoothed > 0.001:
+            peak = max(self.left_bar.peak_level, self.right_bar.peak_level)
+            if peak > 0.001:
                 from audio_capture import DB_FLOOR, DB_RANGE
-                db = smoothed * DB_RANGE + DB_FLOOR
+                db = peak * DB_RANGE + DB_FLOOR
                 self.db_label.setText(f"{db:.1f} dBFS")
             else:
                 self.db_label.setText("-\u221e dBFS")

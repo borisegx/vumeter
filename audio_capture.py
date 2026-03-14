@@ -234,17 +234,23 @@ class AudioCapture(QThread):
         return bands
 
     def _process_audio(self, data):
-        """Calcula el valor RMS matemático de la señal y lo normaliza en escala dB."""
+        """Calcula RMS (barra) y True Peak (indicador de pico) de la señal."""
         # Evitar errores si el hardware entrega un solo canal
         if data.shape[1] >= 2:
             left_rms = np.sqrt(np.mean(data[:, 0]**2))
             right_rms = np.sqrt(np.mean(data[:, 1]**2))
+            # True Peak: máximo absoluto de las muestras (pico real de la señal)
+            left_true_peak = float(np.max(np.abs(data[:, 0])))
+            right_true_peak = float(np.max(np.abs(data[:, 1])))
         else:
             left_rms = right_rms = np.sqrt(np.mean(data[:, 0]**2))
+            left_true_peak = right_true_peak = float(np.max(np.abs(data[:, 0])))
 
         # Normalizar a escala de display (dB → 0.0-1.0)
         left = self._rms_to_display(left_rms)
         right = self._rms_to_display(right_rms)
+        left_tp = self._rms_to_display(left_true_peak)
+        right_tp = self._rms_to_display(right_true_peak)
 
         # Cálculo del tiempo delta para una física independiente del framerate
         current_time = time.time()
@@ -254,11 +260,11 @@ class AudioCapture(QThread):
         # Inercia balística mediante decaimiento exponencial
         decay_factor = np.exp(-self.decay_rate * dt)
 
-        # Actualización de picos con resistencia a la caída
-        self.left_peak = left if left > self.left_peak else self.left_peak * decay_factor
-        self.right_peak = right if right > self.right_peak else self.right_peak * decay_factor
+        # Peak balístico basado en True Peak (no RMS)
+        self.left_peak = left_tp if left_tp > self.left_peak else self.left_peak * decay_factor
+        self.right_peak = right_tp if right_tp > self.right_peak else self.right_peak * decay_factor
 
-        # Emitir la señal de forma segura a la interfaz
+        # Emitir: barra=RMS, peak=True Peak balístico
         self.levels_updated.emit(left, right, self.left_peak, self.right_peak)
 
         # Análisis de espectro por bandas de frecuencia
@@ -286,18 +292,21 @@ class AudioCapture(QThread):
         while self.is_running:
             t += 0.05
 
-            # Crear patrones de onda oscilatoria simulada
+            # Crear patrones de onda oscilatoria simulada (valores ya normalizados)
             base = 0.3 + 0.2 * np.sin(t * 0.5)
             left = min(1.0, max(0.0, base + 0.1 * np.sin(t * 7)))
             right = min(1.0, max(0.0, base - 0.1 * np.sin(t * 3)))
+            # Simular true peak ligeramente más alto que RMS
+            left_tp = min(1.0, left + 0.08)
+            right_tp = min(1.0, right + 0.08)
 
             current_time = time.time()
             dt = current_time - self.last_time
             self.last_time = current_time
 
             decay_factor = np.exp(-self.decay_rate * dt)
-            self.left_peak = left if left > self.left_peak else self.left_peak * decay_factor
-            self.right_peak = right if right > self.right_peak else self.right_peak * decay_factor
+            self.left_peak = left_tp if left_tp > self.left_peak else self.left_peak * decay_factor
+            self.right_peak = right_tp if right_tp > self.right_peak else self.right_peak * decay_factor
 
             self.levels_updated.emit(left, right, self.left_peak, self.right_peak)
 
