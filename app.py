@@ -13,7 +13,7 @@ from pathlib import Path
 from PyQt6.QtWidgets import (QApplication, QMainWindow, QWidget, QVBoxLayout,
                              QHBoxLayout, QPushButton, QLabel, QComboBox,
                              QCheckBox, QSystemTrayIcon, QMenu,
-                             QFrame, QSpinBox, QSlider)
+                             QFrame, QSlider)
 from PyQt6.QtCore import Qt, QTimer, QSize
 from PyQt6.QtGui import QIcon, QFont, QPixmap, QPainter, QColor, QBrush, QAction
 
@@ -238,14 +238,14 @@ class MainWindow(QMainWindow):
         color_layout.addWidget(self.color_combo)
         main_layout.addLayout(color_layout)
 
-        # Número de LEDs
+        # Número de LEDs (3 opciones fijas con tamaño adaptativo)
         led_layout = QHBoxLayout()
         led_label = QLabel("Número de LEDs:")
-        self.led_spin = QSpinBox()
-        self.led_spin.setRange(10, 30)
-        self.led_spin.setValue(20)
+        self.led_combo = QComboBox()
+        self.led_combo.addItems(['12 LEDs', '20 LEDs', '30 LEDs'])
+        self.led_combo.setCurrentIndex(1)  # 20 LEDs por defecto
         led_layout.addWidget(led_label)
-        led_layout.addWidget(self.led_spin)
+        led_layout.addWidget(self.led_combo)
         main_layout.addLayout(led_layout)
 
         # Tamaño
@@ -429,8 +429,13 @@ class MainWindow(QMainWindow):
         idx = cfg.get('color_scheme', 0)
         if 0 <= idx < self.color_combo.count():
             self.color_combo.setCurrentIndex(idx)
-        # LEDs
-        self.led_spin.setValue(cfg.get('num_leds', 20))
+        # LEDs (mapear valor guardado al índice del combo)
+        led_counts = [12, 20, 30]
+        saved_leds = cfg.get('num_leds', 20)
+        if saved_leds in led_counts:
+            self.led_combo.setCurrentIndex(led_counts.index(saved_leds))
+        else:
+            self.led_combo.setCurrentIndex(1)  # default 20
         # Size
         size_idx = cfg.get('size_mode', 0)
         if 0 <= size_idx < self.size_combo.count():
@@ -462,7 +467,7 @@ class MainWindow(QMainWindow):
         """Guarda la configuración actual de los controles."""
         config = {
             'color_scheme': self.color_combo.currentIndex(),
-            'num_leds': self.led_spin.value(),
+            'num_leds': [12, 20, 30][self.led_combo.currentIndex()],
             'size_mode': self.size_combo.currentIndex(),
             'spectrum_bands': self.bands_combo.currentIndex(),
             'always_on_top': self.always_on_top_check.isChecked(),
@@ -514,7 +519,7 @@ class MainWindow(QMainWindow):
 
             # Obtener configuración
             color_scheme = self.color_combo.currentData() or 'classic'
-            num_leds = self.led_spin.value()
+            num_leds = [12, 20, 30][self.led_combo.currentIndex()]
             selected_device = self.device_combo.currentText()
             size_mode = 'small' if self.size_combo.currentText() == 'Pequeño' else 'large'
 

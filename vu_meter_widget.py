@@ -28,11 +28,34 @@ def spectrum_color(index: int, total: int) -> QColor:
     hue = int(index / (total - 1) * 270)  # 0° rojo → 270° púrpura
     return QColor.fromHsv(hue, 255, 220)
 
-# Dimensiones por modo de tamaño
+# Dimensiones por modo de tamaño (fallback)
 SIZE_CONFIG = {
     'large': {'led_size': 12, 'led_spacing': 3, 'border_radius': 4, 'window': (220, 420)},
     'small': {'led_size': 6,  'led_spacing': 2, 'border_radius': 2, 'window': (120, 240)},
 }
+
+# Tamaño adaptativo de LEDs según cantidad (los LEDs se reducen con más cantidad)
+LED_SIZE_CONFIG = {
+    'large': {
+        12: {'led_size': 14, 'led_spacing': 4, 'border_radius': 5},
+        20: {'led_size': 12, 'led_spacing': 3, 'border_radius': 4},
+        30: {'led_size': 8,  'led_spacing': 2, 'border_radius': 3},
+    },
+    'small': {
+        12: {'led_size': 8, 'led_spacing': 2, 'border_radius': 3},
+        20: {'led_size': 6, 'led_spacing': 2, 'border_radius': 2},
+        30: {'led_size': 4, 'led_spacing': 1, 'border_radius': 2},
+    },
+}
+
+# Opciones fijas de cantidad de LEDs
+LED_COUNTS = [12, 20, 30]
+
+
+def get_led_config(size_mode: str, num_leds: int) -> dict:
+    """Retorna configuración de tamaño para LEDs según modo y cantidad."""
+    mode_cfg = LED_SIZE_CONFIG.get(size_mode, LED_SIZE_CONFIG['large'])
+    return mode_cfg.get(num_leds, mode_cfg[20])
 
 # Directorio de skins
 SKINS_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'skins')
@@ -84,7 +107,7 @@ class LEDBar(QWidget):
         self.max_peak_level = 0.0
 
         self.size_mode = size_mode
-        cfg = SIZE_CONFIG.get(size_mode, SIZE_CONFIG['large'])
+        cfg = get_led_config(size_mode, num_leds)
         self.led_size = cfg['led_size']
         self.led_spacing = cfg['led_spacing']
         self.border_radius = cfg['border_radius']
@@ -112,9 +135,9 @@ class LEDBar(QWidget):
     def _classic_colors(self, index: int, total: int) -> QColor:
         """Esquema clásico: verde -> amarillo -> rojo"""
         ratio = index / total
-        if ratio < 0.50:
+        if ratio < 0.45:
             return QColor(0, 200, 0)  # Verde
-        elif ratio < 0.72:
+        elif ratio < 0.67:
             return QColor(255, 200, 0)  # Amarillo
         else:
             return QColor(255, 50, 50)  # Rojo
@@ -828,8 +851,10 @@ class VUMeterWidget(QWidget):
         main_layout.addWidget(container)
 
         # Tamaño dinámico según número de LEDs y secciones activas
+        led_cfg = get_led_config(self.size_mode, self.num_leds)
+        per_led = led_cfg['led_size'] + led_cfg['led_spacing']
+
         if self.size_mode == 'small':
-            per_led = 8   # led_size(6) + led_spacing(2)
             height = 80 + self.num_leds * per_led
             if self.show_spectrum:
                 height = 108 + self.num_leds * per_led + self.num_bands * 12
@@ -837,7 +862,6 @@ class VUMeterWidget(QWidget):
                 height += 115
             self.setFixedSize(120, height)
         else:
-            per_led = 15  # led_size(12) + led_spacing(3)
             height = 100 + self.num_leds * per_led
             if self.show_spectrum:
                 height = 152 + self.num_leds * per_led + self.num_bands * 18
@@ -953,15 +977,6 @@ class VUMeterWidget(QWidget):
         if right_value:
             right_value.setText(f"{self.right_level:.2f}")
 
-        # Actualizar dB (convertir nivel normalizado 0-1 a dBFS real)
-        max_level = max(self.left_level, self.right_level)
-        if max_level > 0.001:
-            from audio_capture import DB_FLOOR, DB_RANGE
-            db = max_level * DB_RANGE + DB_FLOOR
-            self.db_label.setText(f"{db:.1f} dB")
-        else:
-            self.db_label.setText("-\u221e dB")
-
         # Emitir señal
         self.levels_changed.emit(self.left_level, self.right_level,
                                 self.left_peak, self.right_peak)
@@ -986,6 +1001,17 @@ class VUMeterWidget(QWidget):
             self.left_bar.apply_interpolation()
         if hasattr(self, 'right_bar'):
             self.right_bar.apply_interpolation()
+
+        # Actualizar dB usando el nivel suavizado (consistente con los LEDs)
+        if hasattr(self, 'left_bar') and hasattr(self, 'right_bar'):
+            smoothed = max(self.left_bar.level, self.right_bar.level)
+            if smoothed > 0.001:
+                from audio_capture import DB_FLOOR, DB_RANGE
+                db = smoothed * DB_RANGE + DB_FLOOR
+                self.db_label.setText(f"{db:.1f} dB")
+            else:
+                self.db_label.setText("-\u221e dB")
+
         for bar in getattr(self, 'left_spectrum_bars', []):
             bar.apply_interpolation()
         for bar in getattr(self, 'right_spectrum_bars', []):
