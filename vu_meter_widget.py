@@ -133,14 +133,19 @@ class LEDBar(QWidget):
             self.setFixedWidth((self.led_size + self.led_spacing) * num_leds + 10)
 
     def _classic_colors(self, index: int, total: int) -> QColor:
-        """Esquema clásico: verde -> amarillo -> rojo"""
+        """Esquema clásico profesional: verde -> amarillo -> rojo
+        Umbrales calibrados en dBFS (rango -60 a 0):
+          Verde:    < -18 dBFS (ratio < 0.70) — nivel normal
+          Amarillo: -18 a -6 dBFS (0.70-0.90) — nivel alto
+          Rojo:     > -6 dBFS (ratio >= 0.90) — peligro de clipping
+        """
         ratio = index / total
-        if ratio < 0.45:
-            return QColor(0, 200, 0)  # Verde
-        elif ratio < 0.67:
-            return QColor(255, 200, 0)  # Amarillo
+        if ratio < 0.70:
+            return QColor(0, 200, 0)    # Verde — nivel seguro
+        elif ratio < 0.90:
+            return QColor(255, 200, 0)  # Amarillo — precaución
         else:
-            return QColor(255, 50, 50)  # Rojo
+            return QColor(255, 50, 50)  # Rojo — peligro
 
     def _green_colors(self, index: int, total: int) -> QColor:
         """Esquema verde con degradado"""
@@ -994,9 +999,9 @@ class VUMeterWidget(QWidget):
             if smoothed > 0.001:
                 from audio_capture import DB_FLOOR, DB_RANGE
                 db = smoothed * DB_RANGE + DB_FLOOR
-                self.db_label.setText(f"{db:.1f} dB")
+                self.db_label.setText(f"{db:.1f} dBFS")
             else:
-                self.db_label.setText("-\u221e dB")
+                self.db_label.setText("-\u221e dBFS")
 
         for bar in getattr(self, 'left_spectrum_bars', []):
             bar.apply_interpolation()
