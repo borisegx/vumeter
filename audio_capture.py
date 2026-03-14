@@ -21,7 +21,7 @@ DEFAULT_SAMPLE_RATE = 44100
 DEFAULT_CHUNK_SIZE = 1024
 BALLISTIC_DECAY_RATE = 3.0       # Factor de decaimiento exponencial (seg^-1)
 DB_FLOOR = -60.0                 # Piso en dB (silencio)
-DB_CEILING = 6.0                 # Techo en dB (+6dB headroom para evitar saturación visual)
+DB_CEILING = 0.0                 # Techo en dB (0 dBFS = escala completa estándar)
 DB_RANGE = DB_CEILING - DB_FLOOR # Rango total en dB
 SIMULATION_STEP = 0.05           # Incremento temporal en simulación
 SIMULATION_SLEEP = 0.02          # Pausa entre frames de simulación (seg)

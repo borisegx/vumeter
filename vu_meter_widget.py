@@ -951,10 +951,11 @@ class VUMeterWidget(QWidget):
         if right_value:
             right_value.setText(f"{self.right_level:.2f}")
 
-        # Actualizar dB
+        # Actualizar dB (convertir nivel normalizado 0-1 a dBFS real)
         max_level = max(self.left_level, self.right_level)
-        if max_level > 0:
-            db = 20 * math.log10(max_level)
+        if max_level > 0.001:
+            from audio_capture import DB_FLOOR, DB_RANGE
+            db = max_level * DB_RANGE + DB_FLOOR
             self.db_label.setText(f"{db:.1f} dB")
         else:
             self.db_label.setText("-\u221e dB")
